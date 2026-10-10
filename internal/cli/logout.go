@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/productos/productos-agent/internal/config"
+	"github.com/Hamdan85/productos-agent/internal/config"
 )
 
 func logoutCmd() *cobra.Command {

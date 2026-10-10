@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/productos/productos-agent/internal/config"
-	"github.com/productos/productos-agent/internal/gitx"
-	"github.com/productos/productos-agent/internal/protocol"
-	"github.com/productos/productos-agent/internal/stream"
-	"github.com/productos/productos-agent/internal/tools"
+	"github.com/Hamdan85/productos-agent/internal/config"
+	"github.com/Hamdan85/productos-agent/internal/gitx"
+	"github.com/Hamdan85/productos-agent/internal/protocol"
+	"github.com/Hamdan85/productos-agent/internal/stream"
+	"github.com/Hamdan85/productos-agent/internal/tools"
 )
 
 const (

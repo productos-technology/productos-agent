@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/productos/productos-agent/internal/stream"
+	"github.com/Hamdan85/productos-agent/internal/stream"
 )
 
 type Parser struct {

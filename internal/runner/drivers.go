@@ -4,11 +4,11 @@ import (
 	"context"
 	"os/exec"
 
-	"github.com/productos/productos-agent/internal/config"
-	"github.com/productos/productos-agent/internal/stream"
-	"github.com/productos/productos-agent/internal/stream/claude"
-	"github.com/productos/productos-agent/internal/stream/codex"
-	"github.com/productos/productos-agent/internal/tools"
+	"github.com/Hamdan85/productos-agent/internal/config"
+	"github.com/Hamdan85/productos-agent/internal/stream"
+	"github.com/Hamdan85/productos-agent/internal/stream/claude"
+	"github.com/Hamdan85/productos-agent/internal/stream/codex"
+	"github.com/Hamdan85/productos-agent/internal/tools"
 )
 
 // Driver knows how to start a tool non-interactively with a JSON stream on stdout, resume it, and parse it.

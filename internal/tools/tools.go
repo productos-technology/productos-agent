@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/productos/productos-agent/internal/protocol"
+	"github.com/Hamdan85/productos-agent/internal/protocol"
 )
 
 const (

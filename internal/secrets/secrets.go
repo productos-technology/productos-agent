@@ -13,7 +13,7 @@ import (
 
 	"github.com/zalando/go-keyring"
 
-	"github.com/productos/productos-agent/internal/paths"
+	"github.com/Hamdan85/productos-agent/internal/paths"
 )
 
 const service = "productos-agent"

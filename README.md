@@ -16,7 +16,7 @@ curl -fsSL https://productos.technology/install.sh | sh        # Linux (and macO
 winget install ProductOS.Agent                                 # Windows
 ```
 
-Or download an archive from the [releases](https://github.com/productos/productos-agent/releases) and put
+Or download an archive from the [releases](https://github.com/Hamdan85/productos-agent/releases) and put
 `productos-agent` on your PATH. Checksums are in `checksums.txt`.
 
 You also need `git`, one of [Claude Code](https://docs.anthropic.com/claude-code) (`claude`) or
@@ -123,7 +123,7 @@ fallback), `internal/runner` (one run: checkout, tool, events, question/answer, 
 ## Release
 
 Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The `release` workflow runs goreleaser: archives per OS/arch,
-`checksums.txt`, the GitHub release, the Homebrew formula in `productos/homebrew-tap`, and a winget pull request.
+`checksums.txt`, the GitHub release, the Homebrew formula in `Hamdan85/homebrew-tap`, and a winget pull request.
 Secrets: `HOMEBREW_TAP_GITHUB_TOKEN`, `WINGET_GITHUB_TOKEN`. `install.sh` here is the real installer the server
 serves at `/install.sh`.
 

@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/productos/productos-agent/internal/protocol"
-	"github.com/productos/productos-agent/internal/version"
+	"github.com/Hamdan85/productos-agent/internal/protocol"
+	"github.com/Hamdan85/productos-agent/internal/version"
 )
 
 // TokenSource is what the client needs from the OAuth side.

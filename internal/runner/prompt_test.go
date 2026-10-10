@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/productos/productos-agent/internal/protocol"
+	"github.com/Hamdan85/productos-agent/internal/protocol"
 )
 
 func TestBuildPromptFramesTheDefinition(t *testing.T) {

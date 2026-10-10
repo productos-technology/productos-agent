@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/productos/productos-agent/internal/paths"
+	"github.com/Hamdan85/productos-agent/internal/paths"
 )
 
 const DefaultServer = "https://productos.technology"

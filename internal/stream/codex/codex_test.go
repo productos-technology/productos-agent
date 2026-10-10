@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/productos/productos-agent/internal/stream"
+	"github.com/Hamdan85/productos-agent/internal/stream"
 )
 
 func feedFile(t *testing.T, name string) []stream.Item {

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/productos/productos-agent/internal/secrets"
+	"github.com/Hamdan85/productos-agent/internal/secrets"
 )
 
 // ErrSignedOut: there are no credentials, or the refresh token was refused for good. The person must `login` again.

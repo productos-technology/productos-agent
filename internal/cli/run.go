@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/productos/productos-agent/internal/daemon"
+	"github.com/Hamdan85/productos-agent/internal/daemon"
 )
 
 func runCmd() *cobra.Command {

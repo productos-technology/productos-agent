@@ -1,7 +1,7 @@
 // Package version holds the build identity, set by the linker at release time.
 package version
 
-// Set with -ldflags "-X github.com/productos/productos-agent/internal/version.Version=1.2.3 ...".
+// Set with -ldflags "-X github.com/Hamdan85/productos-agent/internal/version.Version=1.2.3 ...".
 var (
 	Version = "0.0.0-dev"
 	Commit  = "none"
