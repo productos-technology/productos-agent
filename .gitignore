@@ -1,0 +1,5 @@
+/dist/
+/productos-agent
+/productos-agent.exe
+*.test
+/coverage.out

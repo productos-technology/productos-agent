@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'cargo test'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'cargo test'","aggregated_output":"error[E0425]: cannot find value `store`\ntest result: FAILED. 0 passed; 1 failed\n","exit_code":101,"status":"failed"}}
+{"type":"error","message":"stream disconnected before completion: context window exceeded"}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion: context window exceeded"}}
