@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Hamdan85/productos-agent/internal/api"
-	"github.com/Hamdan85/productos-agent/internal/paths"
-	"github.com/Hamdan85/productos-agent/internal/tools"
-	"github.com/Hamdan85/productos-agent/internal/version"
+	"github.com/productos-technology/productos-agent/internal/api"
+	"github.com/productos-technology/productos-agent/internal/paths"
+	"github.com/productos-technology/productos-agent/internal/tools"
+	"github.com/productos-technology/productos-agent/internal/version"
 )
 
 func doctorCmd() *cobra.Command {

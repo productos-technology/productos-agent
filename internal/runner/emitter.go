@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Hamdan85/productos-agent/internal/protocol"
+	"github.com/productos-technology/productos-agent/internal/protocol"
 )
 
 const (

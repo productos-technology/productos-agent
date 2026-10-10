@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Hamdan85/productos-agent/internal/api"
-	"github.com/Hamdan85/productos-agent/internal/cable"
-	"github.com/Hamdan85/productos-agent/internal/config"
-	"github.com/Hamdan85/productos-agent/internal/oauth"
-	"github.com/Hamdan85/productos-agent/internal/protocol"
-	"github.com/Hamdan85/productos-agent/internal/runner"
-	"github.com/Hamdan85/productos-agent/internal/tools"
-	"github.com/Hamdan85/productos-agent/internal/version"
+	"github.com/productos-technology/productos-agent/internal/api"
+	"github.com/productos-technology/productos-agent/internal/cable"
+	"github.com/productos-technology/productos-agent/internal/config"
+	"github.com/productos-technology/productos-agent/internal/oauth"
+	"github.com/productos-technology/productos-agent/internal/protocol"
+	"github.com/productos-technology/productos-agent/internal/runner"
+	"github.com/productos-technology/productos-agent/internal/tools"
+	"github.com/productos-technology/productos-agent/internal/version"
 )
 
 const (

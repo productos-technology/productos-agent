@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Hamdan85/productos-agent/internal/paths"
+	"github.com/productos-technology/productos-agent/internal/paths"
 )
 
 const maxSize = 10 << 20

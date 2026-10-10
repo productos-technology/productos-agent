@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Hamdan85/productos-agent/internal/paths"
+	"github.com/productos-technology/productos-agent/internal/paths"
 )
 
 // State is what the daemon publishes for `status`: a small JSON file in the state directory.

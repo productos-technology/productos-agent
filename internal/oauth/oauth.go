@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Hamdan85/productos-agent/internal/secrets"
+	"github.com/productos-technology/productos-agent/internal/secrets"
 )
 
 const (

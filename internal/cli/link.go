@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Hamdan85/productos-agent/internal/api"
-	"github.com/Hamdan85/productos-agent/internal/gitx"
+	"github.com/productos-technology/productos-agent/internal/api"
+	"github.com/productos-technology/productos-agent/internal/gitx"
 )
 
 func linkCmd() *cobra.Command {

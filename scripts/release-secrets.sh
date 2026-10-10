@@ -1,8 +1,8 @@
 #!/bin/sh
-# Stores the two Actions secrets the release workflow needs on Hamdan85/productos-agent:
+# Stores the two Actions secrets the release workflow needs on productos-technology/productos-agent:
 #
-#   HOMEBREW_TAP_GITHUB_TOKEN  writes the formula into Hamdan85/homebrew-tap
-#   WINGET_GITHUB_TOKEN        pushes a branch to the Hamdan85/winget-pkgs fork and opens the upstream PR
+#   HOMEBREW_TAP_GITHUB_TOKEN  writes the formula into productos-technology/homebrew-tap
+#   WINGET_GITHUB_TOKEN        pushes a branch to the productos-technology/winget-pkgs fork and opens the upstream PR
 #
 # GitHub has no API for minting a personal access token (anything that could mint one would already hold a
 # credential), so for each secret this script opens the token page pre-filled with the right name, repository
@@ -14,8 +14,8 @@
 #   scripts/release-secrets.sh winget     # one of: homebrew | winget
 set -eu
 
-REPO="Hamdan85/productos-agent"
-OWNER="Hamdan85"
+REPO="productos-technology/productos-agent"
+OWNER="productos-technology"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
 need gh

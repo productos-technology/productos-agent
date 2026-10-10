@@ -7,9 +7,9 @@ Publisher: ProductOS
 PublisherUrl: https://productos.technology
 PublisherSupportUrl: https://productos.technology/docs/agent
 PackageName: ProductOS Agent
-PackageUrl: https://github.com/Hamdan85/productos-agent
+PackageUrl: https://github.com/productos-technology/productos-agent
 License: MIT
-LicenseUrl: https://github.com/Hamdan85/productos-agent/blob/main/LICENSE
+LicenseUrl: https://github.com/productos-technology/productos-agent/blob/main/LICENSE
 ShortDescription: Runs ProductOS change definitions in your own checkouts with Claude Code or Codex
 Moniker: productos-agent
 Tags:
@@ -20,7 +20,7 @@ Tags:
 Installers:
   - Architecture: x64
     InstallerType: zip
-    InstallerUrl: https://github.com/Hamdan85/productos-agent/releases/download/vVERSION/productos-agent_VERSION_windows_amd64.zip
+    InstallerUrl: https://github.com/productos-technology/productos-agent/releases/download/vVERSION/productos-agent_VERSION_windows_amd64.zip
     InstallerSha256: SHA256_AMD64
     NestedInstallerType: portable
     NestedInstallerFiles:
@@ -28,7 +28,7 @@ Installers:
         PortableCommandAlias: productos-agent
   - Architecture: arm64
     InstallerType: zip
-    InstallerUrl: https://github.com/Hamdan85/productos-agent/releases/download/vVERSION/productos-agent_VERSION_windows_arm64.zip
+    InstallerUrl: https://github.com/productos-technology/productos-agent/releases/download/vVERSION/productos-agent_VERSION_windows_arm64.zip
     InstallerSha256: SHA256_ARM64
     NestedInstallerType: portable
     NestedInstallerFiles:

@@ -13,12 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Hamdan85/productos-agent/internal/api"
-	"github.com/Hamdan85/productos-agent/internal/config"
-	"github.com/Hamdan85/productos-agent/internal/logx"
-	"github.com/Hamdan85/productos-agent/internal/oauth"
-	"github.com/Hamdan85/productos-agent/internal/secrets"
-	"github.com/Hamdan85/productos-agent/internal/version"
+	"github.com/productos-technology/productos-agent/internal/api"
+	"github.com/productos-technology/productos-agent/internal/config"
+	"github.com/productos-technology/productos-agent/internal/logx"
+	"github.com/productos-technology/productos-agent/internal/oauth"
+	"github.com/productos-technology/productos-agent/internal/secrets"
+	"github.com/productos-technology/productos-agent/internal/version"
 )
 
 var verbose bool

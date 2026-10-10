@@ -1,4 +1,4 @@
-module github.com/Hamdan85/productos-agent
+module github.com/productos-technology/productos-agent
 
 go 1.24
 

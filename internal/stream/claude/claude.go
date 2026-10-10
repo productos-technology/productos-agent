@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Hamdan85/productos-agent/internal/stream"
+	"github.com/productos-technology/productos-agent/internal/stream"
 )
 
 // AskTool is the tool Claude Code uses to ask the person something.

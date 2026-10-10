@@ -18,10 +18,10 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/Hamdan85/productos-agent/internal/api"
-	"github.com/Hamdan85/productos-agent/internal/config"
-	"github.com/Hamdan85/productos-agent/internal/logx"
-	"github.com/Hamdan85/productos-agent/internal/protocol"
+	"github.com/productos-technology/productos-agent/internal/api"
+	"github.com/productos-technology/productos-agent/internal/config"
+	"github.com/productos-technology/productos-agent/internal/logx"
+	"github.com/productos-technology/productos-agent/internal/protocol"
 )
 
 // The test binary doubles as the fake coding tool: PRODUCTOS_AGENT_FAKE_TOOL=1 makes it stream a fixture.

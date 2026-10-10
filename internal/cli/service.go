@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/Hamdan85/productos-agent/internal/service"
+	"github.com/productos-technology/productos-agent/internal/service"
 )
 
 func serviceCmd() *cobra.Command {

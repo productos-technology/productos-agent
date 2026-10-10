@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Hamdan85/productos-agent/internal/protocol"
+	"github.com/productos-technology/productos-agent/internal/protocol"
 )
 
 // buildPrompt frames the change definition for an unattended tool. The definition itself is never logged.

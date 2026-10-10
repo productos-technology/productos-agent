@@ -20,9 +20,9 @@ builds:
     flags: [-trimpath]
     ldflags:
       - -s -w
-      - -X github.com/Hamdan85/productos-agent/internal/version.Version={{ .Version }}
-      - -X github.com/Hamdan85/productos-agent/internal/version.Commit={{ .ShortCommit }}
-      - -X github.com/Hamdan85/productos-agent/internal/version.Date={{ .CommitDate }}
+      - -X github.com/productos-technology/productos-agent/internal/version.Version={{ .Version }}
+      - -X github.com/productos-technology/productos-agent/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/productos-technology/productos-agent/internal/version.Date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
@@ -52,7 +52,7 @@ changelog:
 
 release:
   github:
-    owner: Hamdan85
+    owner: productos-technology
     name: productos-agent
   draft: false
   prerelease: auto
@@ -65,13 +65,13 @@ release:
 
     Then `productos-agent login https://productos.technology` and, inside a checkout, `productos-agent link`.
 
-# Homebrew tap: github.com/Hamdan85/homebrew-tap, formula productos-agent.
+# Homebrew tap: github.com/productos-technology/homebrew-tap, formula productos-agent.
 # Needs HOMEBREW_TAP_GITHUB_TOKEN with write access to that repository.
 brews:
   - name: productos-agent
     ids: [default]
     repository:
-      owner: Hamdan85
+      owner: productos-technology
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
@@ -111,7 +111,7 @@ winget:
       name: productos-release-bot
       email: release@productos.technology
     repository:
-      owner: Hamdan85
+      owner: productos-technology
       name: winget-pkgs
       branch: "productos-agent-{{ .Version }}"
       token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
