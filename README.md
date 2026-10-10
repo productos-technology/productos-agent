@@ -11,7 +11,7 @@ One static binary; Linux, macOS and Windows, amd64 and arm64.
 ## Install
 
 ```sh
-brew install productos/tap/productos-agent                     # macOS
+brew install hamdan85/tap/productos-agent                     # macOS
 curl -fsSL https://productos.technology/install.sh | sh        # Linux (and macOS)
 winget install ProductOS.Agent                                 # Windows
 ```
