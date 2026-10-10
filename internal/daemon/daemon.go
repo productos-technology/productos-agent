@@ -312,7 +312,7 @@ func (d *Daemon) startRun(ctx context.Context, start protocol.RunStart) {
 	}()
 }
 
-// resumeRuns: after a (re)connect, runs the server still considers active but this process does not know were
+// resumeRuns: after a (re)connect, runs the server still considers acknowledged but this process does not know were
 // interrupted by a restart; the tool is gone, so they fail honestly.
 func (d *Daemon) resumeRuns(ctx context.Context) {
 	runs, err := d.API.ActiveRuns(ctx, d.Config.DeviceID)
@@ -321,7 +321,8 @@ func (d *Daemon) resumeRuns(ctx context.Context) {
 		return
 	}
 	for _, r := range runs {
-		if d.run(r.ID) != nil {
+		if d.run(r.ID) != nil || r.Status == protocol.StatusQueued {
+			// Ours, or not yet acknowledged by anyone: its run.start is on its way (or the server fails it with no_ack).
 			continue
 		}
 		d.Log.Warn("run was active before the agent restarted; failing it", "run_id", r.ID)
