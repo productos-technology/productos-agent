@@ -26,7 +26,7 @@ to open pull requests.
 ## Use
 
 ```sh
-productos-agent login https://productos.technology   # opens the browser; approve the agent; registers this machine
+productos-agent login                                # opens the browser; approve the agent; registers this machine
 cd ~/code/mobile && productos-agent link             # the checkout's origin must be a repository your workspace connects
 productos-agent run                                  # stay connected (foreground); Ctrl-C to stop
 productos-agent service install                      # or keep it running in the background
@@ -36,7 +36,7 @@ Then open a pain in ProductOS, **Deliver**, pick this machine and the tool, **Ru
 
 | Command | What it does |
 |---|---|
-| `login [--server URL] [--name NAME] [--no-browser]` | OAuth sign-in with PKCE on a loopback port, dynamic client registration, tokens in the OS keychain (fallback: a 0600 file under the config dir, with a warning); registers the device. |
+| `login [server] [--name NAME] [--no-browser]` | Signs in to productos.technology, or to the self-hosted ProductOS given as `server`. OAuth sign-in with PKCE on a loopback port, dynamic client registration, tokens in the OS keychain (fallback: a 0600 file under the config dir, with a warning); registers the device. |
 | `logout` | Revokes the device (cancels its runs, drops its links), revokes the tokens, forgets the credentials. |
 | `status` | Server, login, tools, daemon state, device and linked checkouts (reads the device through a heartbeat). |
 | `link [path] [--branch B]` | Validates the git checkout, reads `origin` and the default branch, registers it. An unknown remote lists what ProductOS expected. |

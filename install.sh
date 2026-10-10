@@ -82,7 +82,7 @@ case ":$PATH:" in
 esac
 say ""
 say "Next:"
-say "  $BINARY login https://productos.technology    # sign in and register this machine"
+say "  $BINARY login                                 # sign in and register this machine"
 say "  cd <a checkout> && $BINARY link               # link a repository your workspace connects"
 say "  $BINARY service install                       # keep it running in the background"
 say "Documentation: $DOCS"

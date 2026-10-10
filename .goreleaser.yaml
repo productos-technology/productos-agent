@@ -63,7 +63,7 @@ release:
     - Linux: `curl -fsSL https://productos.technology/install.sh | sh`
     - Windows: `winget install ProductOS.Agent`
 
-    Then `productos-agent login https://productos.technology` and, inside a checkout, `productos-agent link`.
+    Then `productos-agent login` and, inside a checkout, `productos-agent link`.
 
 # Homebrew tap: github.com/productos-technology/homebrew-tap, formula productos-agent.
 # Needs HOMEBREW_TAP_GITHUB_TOKEN with write access to that repository.
@@ -88,7 +88,7 @@ brews:
       assert_match version.to_s, shell_output("#{bin}/productos-agent version")
     caveats: |
       Sign in and register this machine:
-        productos-agent login https://productos.technology
+        productos-agent login
       Then, inside a checkout of a repository your workspace connects:
         productos-agent link
       Keep it running in the background:
