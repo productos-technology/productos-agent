@@ -1,0 +1,38 @@
+# winget manifest template (singleton, schema 1.6). goreleaser fills a multi-file manifest on release; this file
+# documents the identifiers for a manual first submission to microsoft/winget-pkgs. Replace VERSION and the SHA-256s.
+PackageIdentifier: ProductOS.Agent
+PackageVersion: VERSION
+PackageLocale: en-US
+Publisher: ProductOS
+PublisherUrl: https://productos.technology
+PublisherSupportUrl: https://productos.technology/docs/agent
+PackageName: ProductOS Agent
+PackageUrl: https://github.com/productos/productos-agent
+License: MIT
+LicenseUrl: https://github.com/productos/productos-agent/blob/main/LICENSE
+ShortDescription: Runs ProductOS change definitions in your own checkouts with Claude Code or Codex
+Moniker: productos-agent
+Tags:
+  - productos
+  - agent
+  - claude-code
+  - codex
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    InstallerUrl: https://github.com/productos/productos-agent/releases/download/vVERSION/productos-agent_VERSION_windows_amd64.zip
+    InstallerSha256: SHA256_AMD64
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: productos-agent.exe
+        PortableCommandAlias: productos-agent
+  - Architecture: arm64
+    InstallerType: zip
+    InstallerUrl: https://github.com/productos/productos-agent/releases/download/vVERSION/productos-agent_VERSION_windows_arm64.zip
+    InstallerSha256: SHA256_ARM64
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: productos-agent.exe
+        PortableCommandAlias: productos-agent
+ManifestType: singleton
+ManifestVersion: 1.6.0

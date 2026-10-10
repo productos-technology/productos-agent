@@ -1,0 +1,123 @@
+# goreleaser v2 — https://goreleaser.com
+# Release: tag v1.2.3 and push; .github/workflows/release.yml runs `goreleaser release`.
+version: 2
+
+project_name: productos-agent
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: productos-agent
+    main: .
+    binary: productos-agent
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/productos/productos-agent/internal/version.Version={{ .Version }}
+      - -X github.com/productos/productos-agent/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/productos/productos-agent/internal/version.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    # productos-agent_1.2.3_linux_amd64.tar.gz — install.sh depends on this naming.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: productos
+    name: productos-agent
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    - macOS: `brew install productos/tap/productos-agent`
+    - Linux: `curl -fsSL https://productos.technology/install.sh | sh`
+    - Windows: `winget install ProductOS.Agent`
+
+    Then `productos-agent login https://productos.technology` and, inside a checkout, `productos-agent link`.
+
+# Homebrew tap: github.com/productos/homebrew-tap, formula productos-agent.
+# Needs HOMEBREW_TAP_GITHUB_TOKEN with write access to that repository.
+brews:
+  - name: productos-agent
+    ids: [default]
+    repository:
+      owner: productos
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://productos.technology
+    description: Runs ProductOS change definitions in your own checkouts with Claude Code or Codex
+    license: MIT
+    commit_author:
+      name: productos-release-bot
+      email: release@productos.technology
+    install: |
+      bin.install "productos-agent"
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/productos-agent version")
+    caveats: |
+      Sign in and register this machine:
+        productos-agent login https://productos.technology
+      Then, inside a checkout of a repository your workspace connects:
+        productos-agent link
+      Keep it running in the background:
+        productos-agent service install
+
+# winget: goreleaser opens a PR on microsoft/winget-pkgs (needs WINGET_GITHUB_TOKEN, a token on a fork).
+# packaging/winget/ holds the manifest template for a manual first submission.
+winget:
+  - name: productos-agent
+    publisher: ProductOS
+    publisher_url: https://productos.technology
+    publisher_support_url: https://productos.technology/docs/agent
+    package_identifier: ProductOS.Agent
+    short_description: Runs ProductOS change definitions in your own checkouts with Claude Code or Codex
+    license: MIT
+    homepage: https://productos.technology
+    ids: [default]
+    skip_upload: auto
+    commit_author:
+      name: productos-release-bot
+      email: release@productos.technology
+    repository:
+      owner: productos
+      name: winget-pkgs
+      branch: "productos-agent-{{ .Version }}"
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master

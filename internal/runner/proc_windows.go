@@ -9,11 +9,10 @@ import (
 
 func setProcessGroup(cmd *exec.Cmd) {}
 
-// killProcessGroup uses taskkill to take the tree down.
-func killProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process == nil {
+// killProcessGroup uses taskkill to take the whole tree down.
+func killProcessGroup(pid int) {
+	if pid <= 0 {
 		return
 	}
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
-	_ = cmd.Process.Kill()
+	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
 }

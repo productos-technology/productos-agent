@@ -54,7 +54,7 @@ type Run struct {
 	cancelled bool
 	reason    string
 	cancelCtx context.CancelFunc
-	proc      *exec.Cmd
+	procPID   int
 	answers   chan Answer
 
 	emitter   *emitter
@@ -82,11 +82,11 @@ func (r *Run) Cancel(reason string) {
 	r.mu.Lock()
 	r.cancelled = true
 	r.reason = reason
-	proc := r.proc
+	pid := r.procPID
 	cancel := r.cancelCtx
 	r.mu.Unlock()
-	if proc != nil {
-		killProcessGroup(proc)
+	if pid > 0 {
+		killProcessGroup(pid)
 	}
 	if cancel != nil {
 		cancel()
@@ -295,7 +295,7 @@ func (r *Run) runTool(ctx context.Context, driver Driver, bin, input string) (to
 		return toolOutcome{}, fmt.Errorf("could not start %s: %w", driver.Name(), err)
 	}
 	r.mu.Lock()
-	r.proc = cmd
+	r.procPID = cmd.Process.Pid
 	r.mu.Unlock()
 
 	parser := driver.NewParser()
@@ -315,7 +315,7 @@ func (r *Run) runTool(ctx context.Context, driver Driver, bin, input string) (to
 	}
 	waitErr := cmd.Wait()
 	r.mu.Lock()
-	r.proc = nil
+	r.procPID = 0
 	r.mu.Unlock()
 	r.refreshChanges(ctx, &out)
 
