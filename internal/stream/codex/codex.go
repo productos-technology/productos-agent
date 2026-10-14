@@ -1,5 +1,6 @@
 // Package codex parses `codex exec --json` lines (thread.started, turn.*, item.started/item.completed with typed
-// items, error) into stream items.
+// items, error) into stream items. With --output-schema the final agent message is the report's JSON: it becomes the
+// result's Structured answer, never a drawer message.
 package codex
 
 import (
@@ -13,6 +14,7 @@ import (
 type Parser struct {
 	threadID    string
 	lastMessage string
+	structured  json.RawMessage
 	started     map[string]time.Time
 	failed      bool
 	failure     string
@@ -84,7 +86,7 @@ func (p *Parser) Feed(raw string) []stream.Item {
 			return p.completed(l.Item, at)
 		}
 	case "turn.completed":
-		return []stream.Item{{Kind: stream.Result, Text: p.lastMessage, IsFailure: p.failed, At: at}}
+		return []stream.Item{{Kind: stream.Result, Text: p.lastMessage, IsFailure: p.failed, Structured: p.structured, At: at}}
 	case "turn.failed":
 		msg := "the turn failed"
 		if l.Error != nil && l.Error.Message != "" {
@@ -107,6 +109,10 @@ func (p *Parser) completed(it *item, at time.Time) []stream.Item {
 	switch it.Type {
 	case "agent_message":
 		if strings.TrimSpace(it.Text) == "" {
+			return nil
+		}
+		if raw, ok := reportJSON(it.Text); ok {
+			p.structured = raw
 			return nil
 		}
 		p.lastMessage = it.Text
@@ -174,6 +180,27 @@ func (p *Parser) Flush() []stream.Item {
 	}
 	p.started = map[string]time.Time{}
 	return items
+}
+
+// reportJSON recognises the schema's answer: a JSON object (optionally fenced) with a "claim" key.
+func reportJSON(text string) (json.RawMessage, bool) {
+	t := strings.TrimSpace(text)
+	if strings.HasPrefix(t, "```") {
+		t = strings.TrimPrefix(t, "```json")
+		t = strings.TrimPrefix(t, "```")
+		t = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(t), "```"))
+	}
+	if !strings.HasPrefix(t, "{") {
+		return nil, false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(t), &m) != nil {
+		return nil, false
+	}
+	if _, ok := m["claim"]; !ok {
+		return nil, false
+	}
+	return json.RawMessage(t), true
 }
 
 func argumentsOf(raw json.RawMessage) map[string]any {

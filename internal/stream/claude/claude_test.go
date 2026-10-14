@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/productos-technology/productos-agent/internal/stream"
@@ -150,5 +151,68 @@ func TestFlushReportsUnfinishedCalls(t *testing.T) {
 	items := p.Flush()
 	if len(items) != 1 || items[0].Kind != stream.ToolResult || !items[0].IsError || items[0].ID != "t1" {
 		t.Errorf("flush = %+v", items)
+	}
+}
+
+// Recorded from Claude Code 2.1.296 with --json-schema: the model answers the schema through the StructuredOutput
+// tool, and the result line carries structured_output while `result` is the same answer as a JSON string.
+func TestStructuredOutputIsTheReportNotTheSummary(t *testing.T) {
+	items := feedFile(t, "structured_output.jsonl")
+	final := items[len(items)-1]
+	if final.Kind != stream.Result || final.IsFailure || final.Subtype != "success" {
+		t.Fatalf("final = %+v", final)
+	}
+	if len(final.Structured) == 0 || !strings.Contains(string(final.Structured), `"claim":"changed"`) {
+		t.Errorf("structured = %s", final.Structured)
+	}
+	if strings.HasPrefix(strings.TrimSpace(final.Text), "{") || !strings.HasPrefix(final.Text, "I added a `Hello` line") {
+		t.Errorf("the summary must be the last prose message, got %q", final.Text)
+	}
+	for _, it := range items {
+		if (it.Kind == stream.ToolUse || it.Kind == stream.ToolResult) && it.Name == ReportTool {
+			t.Errorf("the report tool leaked into the drawer: %+v", it)
+		}
+		if it.Kind == stream.ToolResult && strings.Contains(it.Output, "Structured output provided") {
+			t.Errorf("the report tool's result leaked: %+v", it)
+		}
+	}
+	var edits int
+	for _, it := range items {
+		if it.Kind == stream.FileChange {
+			edits++
+		}
+	}
+	if edits != 1 {
+		t.Errorf("file changes = %d, want 1", edits)
+	}
+}
+
+func TestResultReadsDenialsAndTheReportToolFallback(t *testing.T) {
+	p := New()
+	p.Feed(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Nothing to change: drafts already persist."}]},"session_id":"s"}`)
+	p.Feed(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t9","name":"StructuredOutput","input":{"claim":"already_done","evidence":["src/drafts/store.ts:12"]}}]},"session_id":"s"}`)
+	items := p.Feed(`{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s","api_error_status":null,"permission_denials":[{"tool_name":"Bash","tool_use_id":"x","tool_input":{"command":"rm -rf /tmp/x"}}]}`)
+	final := items[len(items)-1]
+	if !strings.Contains(string(final.Structured), "already_done") {
+		t.Errorf("the tool call's input should stand in for structured_output: %s", final.Structured)
+	}
+	if final.Text != "Nothing to change: drafts already persist." {
+		t.Errorf("text = %q", final.Text)
+	}
+	if len(final.Denials) != 1 || final.Denials[0].Tool != "Bash" || final.Denials[0].Input["command"] != "rm -rf /tmp/x" {
+		t.Errorf("denials = %+v", final.Denials)
+	}
+	if len(p.Flush()) != 0 {
+		t.Error("the report tool must not be flushed as an unfinished call")
+	}
+}
+
+func TestStructuredRetriesExhaustedIsNotAFailure(t *testing.T) {
+	p := New()
+	p.Feed(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done: the store persists."}]},"session_id":"s"}`)
+	items := p.Feed(`{"type":"result","subtype":"error_max_structured_output_retries","is_error":true,"session_id":"s","api_error_status":401}`)
+	final := items[len(items)-1]
+	if final.IsFailure || final.Text != "Done: the store persists." || final.Structured != nil || final.ErrorStatus != 401 {
+		t.Errorf("final = %+v", final)
 	}
 }

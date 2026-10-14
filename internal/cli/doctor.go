@@ -12,6 +12,7 @@ import (
 	"github.com/productos-technology/productos-agent/internal/api"
 	"github.com/productos-technology/productos-agent/internal/paths"
 	"github.com/productos-technology/productos-agent/internal/tools"
+	"github.com/productos-technology/productos-agent/internal/update"
 	"github.com/productos-technology/productos-agent/internal/version"
 )
 
@@ -29,6 +30,9 @@ func doctorCmd() *cobra.Command {
 				out(w, "[%s] %-14s %s", mark, label, detail)
 			}
 			out(w, "productos-agent %s on %s/%s", version.String(), runtime.GOOS, runtime.GOARCH)
+			invoked, exe, _ := update.Executable()
+			method := update.DetectMethod(invoked, exe)
+			out(w, "       install:   %s (%s)", method, exe)
 			ctx := cmd.Context()
 			detected := tools.Detect(ctx)
 			for _, name := range tools.Known {
@@ -79,6 +83,9 @@ func doctorCmd() *cobra.Command {
 			case err == nil:
 				ok("device", true, device.Name+" ("+device.ID+")")
 				ok("links", len(device.Repositories) > 0, pluralLinks(len(device.Repositories)))
+				ok("version", !device.Outdated, versionDetail(device.Outdated))
+				good, detail := updateLine(version.String(), device.LatestVersion, method)
+				ok("update", good, detail)
 			case api.IsCode(err, "not_found"):
 				ok("device", false, "revoked in ProductOS; run `productos-agent login`")
 			default:
@@ -87,6 +94,13 @@ func doctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func versionDetail(outdated bool) string {
+	if outdated {
+		return version.String() + " is below the server's minimum: runs cannot start until you update"
+	}
+	return version.String()
 }
 
 func firstOr(v, fallback string) string {

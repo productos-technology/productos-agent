@@ -2,7 +2,10 @@
 // tool's JSON stream into them.
 package stream
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Kind of an Item.
 type Kind int
@@ -48,10 +51,24 @@ type Item struct {
 	Action string
 	// Result
 	IsFailure bool
+	// Subtype is the tool's own word for how the session ended (Claude Code: success, error_max_turns, …).
+	Subtype string
+	// ErrorStatus is the HTTP status of the API error that ended the session, when the tool says (Claude Code).
+	ErrorStatus int
+	// Structured is the tool's answer to the report schema (Claude Code's structured_output, Codex's final message).
+	Structured json.RawMessage
+	// Denials are the tool calls the permission mode refused.
+	Denials []Denial
 	// Session
 	SessionID string
 	// Log
 	Level string
+}
+
+// Denial is one tool call the tool's permission mode refused (Claude Code's permission_denials).
+type Denial struct {
+	Tool  string
+	Input map[string]any
 }
 
 // Parser turns one line of the tool's output into zero or more items. Implementations keep per-session state

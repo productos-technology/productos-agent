@@ -13,8 +13,9 @@ func TestBuildPromptFramesTheDefinition(t *testing.T) {
 		ChangeDefinition: protocol.ChangeDefinition{Markdown: "# MOB-P7 Offline drafts\n\nDo the thing."},
 		Options:          protocol.RunOptions{CommitTrailer: "ProductOS: MOB-P7", RunTests: true},
 	}
-	p := buildPrompt(start, "/Users/pat/mobile", "productos/mob-p7-offline-drafts", true)
-	for _, want := range []string{"/Users/pat/mobile", "`productos/mob-p7-offline-drafts`", "`main`", "ProductOS: MOB-P7", "AskUserQuestion", "# MOB-P7 Offline drafts", "Do the thing."} {
+	p := buildPrompt(start, "/Users/pat/mobile", "productos/mob-p7-offline-drafts", true, []string{"a1b2c3d Drafts: IndexedDB store"})
+	for _, want := range []string{"/Users/pat/mobile", "`productos/mob-p7-offline-drafts`", "`main`", "ProductOS: MOB-P7", "AskUserQuestion", "# MOB-P7 Offline drafts", "Do the thing.",
+		"already satisfied", "`already_done`", "file:line", "a1b2c3d Drafts: IndexedDB store", "cosmetic", "`left_out`", "write no file outside it", "language of the change definition", "structured output", "`blocked`"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -22,9 +23,12 @@ func TestBuildPromptFramesTheDefinition(t *testing.T) {
 	if !strings.HasSuffix(p, "\n") {
 		t.Error("prompt must end with a newline")
 	}
-	codex := buildPrompt(start, "/x", "b", false)
-	if strings.Contains(codex, "AskUserQuestion") || !strings.Contains(codex, "single clear question") {
-		t.Error("codex prompt should ask in prose")
+	codex := buildPrompt(start, "/x", "b", false, nil)
+	if strings.Contains(codex, "AskUserQuestion") || !strings.Contains(codex, "claim `needs_input`") {
+		t.Error("codex prompt should ask through the report's question")
+	}
+	if strings.Contains(codex, "already carry") {
+		t.Error("no prior commits, no list")
 	}
 }
 

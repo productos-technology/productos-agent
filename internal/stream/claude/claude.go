@@ -13,6 +13,10 @@ import (
 // AskTool is the tool Claude Code uses to ask the person something.
 const AskTool = "AskUserQuestion"
 
+// ReportTool is the tool Claude Code calls to answer --json-schema. It is the run's report, not work: the drawer never
+// shows it, and its input is the fallback when the result line carries no structured_output.
+const ReportTool = "StructuredOutput"
+
 // EditTools change files; the runner diffs the checkout after each of their results.
 var EditTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
 
@@ -23,7 +27,10 @@ var ShellTools = map[string]bool{"Bash": true, "PowerShell": true}
 type Parser struct {
 	pending   map[string]pendingCall
 	sessionID string
-	now       func() time.Time
+	// lastText is the last assistant prose: the summary when the result itself is the structured answer's JSON.
+	lastText   string
+	structured json.RawMessage
+	now        func() time.Time
 }
 
 type pendingCall struct {
@@ -44,6 +51,15 @@ type line struct {
 	Result          string          `json:"result"`
 	ToolUseResult   json.RawMessage `json:"tool_use_result"`
 	Error           string          `json:"error"`
+	// result
+	StructuredOutput  json.RawMessage `json:"structured_output"`
+	PermissionDenials []denial        `json:"permission_denials"`
+	APIErrorStatus    *int            `json:"api_error_status"`
+}
+
+type denial struct {
+	ToolName  string         `json:"tool_name"`
+	ToolInput map[string]any `json:"tool_input"`
 }
 
 type message struct {
@@ -91,10 +107,17 @@ func (p *Parser) Feed(raw string) []stream.Item {
 			switch b.Type {
 			case "text":
 				if strings.TrimSpace(b.Text) != "" {
+					p.lastText = b.Text
 					items = append(items, stream.Item{Kind: stream.Message, Text: b.Text, At: at})
 				}
 			case "tool_use":
 				p.pending[b.ID] = pendingCall{name: b.Name, input: b.Input, started: at}
+				if b.Name == ReportTool {
+					if raw, err := json.Marshal(b.Input); err == nil {
+						p.structured = raw
+					}
+					continue
+				}
 				if b.Name == AskTool {
 					items = append(items, questionOf(b.Input, at))
 					continue
@@ -118,6 +141,9 @@ func (p *Parser) Feed(raw string) []stream.Item {
 			delete(p.pending, b.ToolUseID)
 			if known && call.name == AskTool {
 				continue // the question's refusal in non-interactive mode: the runner handles the question itself
+			}
+			if known && call.name == ReportTool {
+				continue
 			}
 			item := stream.Item{Kind: stream.ToolResult, ID: b.ToolUseID, At: at, Output: contentText(b.Content)}
 			if known {
@@ -143,7 +169,27 @@ func (p *Parser) Feed(raw string) []stream.Item {
 			items = append(items, item)
 		}
 	case "result":
-		item := stream.Item{Kind: stream.Result, Text: l.Result, IsFailure: l.IsError || (l.Subtype != "" && l.Subtype != "success"), At: at}
+		item := stream.Item{Kind: stream.Result, Text: l.Result, Subtype: l.Subtype, IsFailure: l.IsError || (l.Subtype != "" && l.Subtype != "success"), At: at}
+		if l.Subtype == "error_max_structured_output_retries" {
+			// The tool did its work but never answered the schema: not a failure, the outcome comes from git alone.
+			item.IsFailure = false
+			item.Text = p.lastText
+		}
+		if l.APIErrorStatus != nil {
+			item.ErrorStatus = *l.APIErrorStatus
+		}
+		if len(l.StructuredOutput) > 0 && string(l.StructuredOutput) != "null" {
+			item.Structured = l.StructuredOutput
+		} else if p.structured != nil && !item.IsFailure {
+			item.Structured = p.structured
+		}
+		if item.Structured != nil {
+			// `result` is then the answer's JSON string: the summary is the last prose message instead.
+			item.Text = p.lastText
+		}
+		for _, d := range l.PermissionDenials {
+			item.Denials = append(item.Denials, stream.Denial{Tool: d.ToolName, Input: d.ToolInput})
+		}
 		if item.IsFailure && item.Text == "" {
 			item.Text = l.Subtype
 		}
@@ -158,7 +204,7 @@ func (p *Parser) Feed(raw string) []stream.Item {
 func (p *Parser) Flush() []stream.Item {
 	var items []stream.Item
 	for id, call := range p.pending {
-		if call.name == AskTool {
+		if call.name == AskTool || call.name == ReportTool {
 			continue
 		}
 		items = append(items, stream.Item{Kind: stream.ToolResult, ID: id, Name: call.name, Input: call.input, IsError: true, Output: "no result (the tool exited)", At: p.now()})

@@ -141,14 +141,49 @@ func (r *Repo) Head(ctx context.Context) (string, error) {
 
 // CommitAll stages everything and commits; returns false when there was nothing to commit.
 func (r *Repo) CommitAll(ctx context.Context, message string) (bool, error) {
+	return r.commitAll(ctx, message, false)
+}
+
+// CommitWIP is CommitAll without the repository's hooks: work in progress is saved even when a pre-commit hook
+// would refuse it (the hooks run again on the commit that finishes the work).
+func (r *Repo) CommitWIP(ctx context.Context, message string) (bool, error) {
+	return r.commitAll(ctx, message, true)
+}
+
+func (r *Repo) commitAll(ctx context.Context, message string, noVerify bool) (bool, error) {
 	if _, err := r.git(ctx, "add", "-A"); err != nil {
 		return false, err
 	}
 	if _, err := r.git(ctx, "diff", "--cached", "--quiet"); err == nil {
 		return false, nil // nothing staged
 	}
-	_, err := r.git(ctx, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", message)
+	args := []string{"-c", "commit.gpgsign=false", "commit", "--quiet", "-m", message}
+	if noVerify {
+		args = append(args, "--no-verify")
+	}
+	_, err := r.git(ctx, args...)
 	return err == nil, err
+}
+
+// Stash saves everything (untracked included) and leaves the tree clean: the last resort when even a WIP commit fails.
+func (r *Repo) Stash(ctx context.Context, message string) error {
+	_, err := r.git(ctx, "stash", "push", "--include-untracked", "--message", message)
+	return err
+}
+
+// CommitsWithTrailer lists, one line each, the newest commits on ref whose message contains trailer (fixed string).
+func (r *Repo) CommitsWithTrailer(ctx context.Context, ref, trailer string, n int) ([]string, error) {
+	out, err := r.git(ctx, "log", "--oneline", "--no-decorate", "-n", strconv.Itoa(n), "--fixed-strings", "--grep="+trailer, ref, "--")
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, nil
 }
 
 func (r *Repo) Push(ctx context.Context, branch string) error {

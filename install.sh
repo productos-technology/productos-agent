@@ -2,12 +2,12 @@
 # ProductOS Agent installer: curl -fsSL https://productos.technology/install.sh | sh
 #
 # Detects the OS and architecture, downloads the matching archive of the latest GitHub release of
-# productos/productos-agent (or the version in PRODUCTOS_AGENT_VERSION, e.g. v1.2.3), verifies its SHA-256 against
+# productos-technology/productos-agent (or the version in PRODUCTOS_AGENT_VERSION, e.g. v1.2.3), verifies its SHA-256 against
 # checksums.txt, and installs the `productos-agent` binary into PRODUCTOS_AGENT_INSTALL_DIR (default: /usr/local/bin
 # when writable, else ~/.local/bin). Linux and macOS; on Windows use `winget install ProductOS.Agent`.
 set -eu
 
-REPO="productos/productos-agent"
+REPO="productos-technology/productos-agent"
 BINARY="productos-agent"
 VERSION="${PRODUCTOS_AGENT_VERSION:-latest}"
 DOCS="https://productos.technology/docs/agent"
@@ -34,18 +34,26 @@ esac
 need curl
 need tar
 
+tmp=$(mktemp -d 2>/dev/null || mktemp -d -t productos-agent)
+trap 'rm -rf "$tmp"' EXIT
+
 if [ "$VERSION" = "latest" ]; then
-  VERSION=$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest" \
-    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
-  [ -n "$VERSION" ] || die "could not find the latest release of $REPO"
+  # Anonymous: the release has to be public. The API answers 404 for a private repository as well as for a missing
+  # release, and 403 once the hourly rate limit for this IP is spent, so the failure names the status.
+  api="https://api.github.com/repos/$REPO/releases/latest"
+  status=$(curl -sSL -o "$tmp/release.json" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$api" 2>/dev/null || true)
+  VERSION=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$tmp/release.json" 2>/dev/null | head -n1)
+  if [ -z "$VERSION" ]; then
+    say "error: could not find the latest release of $REPO (GitHub answered ${status:-000})"
+    say "Check https://github.com/$REPO/releases, or install a known version: PRODUCTOS_AGENT_VERSION=v1.2.3 sh install.sh"
+    exit 1
+  fi
 fi
 version_number=${VERSION#v}
 
 archive="${BINARY}_${version_number}_${os}_${arch}.tar.gz"
 base="https://github.com/$REPO/releases/download/$VERSION"
 
-tmp=$(mktemp -d 2>/dev/null || mktemp -d -t productos-agent)
-trap 'rm -rf "$tmp"' EXIT
 
 say "Downloading $BINARY $VERSION for $os/$arch"
 curl -fsSL -o "$tmp/$archive" "$base/$archive" || die "download failed: $base/$archive"

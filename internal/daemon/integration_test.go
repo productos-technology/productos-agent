@@ -99,6 +99,9 @@ type fakeServer struct {
 	answerText   string
 	cancelAt     string // event kind that triggers run.cancel
 	rejectRemote bool
+	// hello's additive fields: nil features is a server from before outcomes (legacy)
+	features []string
+	agent    *protocol.AgentVersions
 }
 
 type fakeRun struct {
@@ -317,12 +320,25 @@ func (f *fakeServer) cable(w http.ResponseWriter, r *http.Request) {
 			}
 			identifier = frame.Identifier
 			send(map[string]any{"type": "confirm_subscription", "identifier": identifier})
-			send(map[string]any{"identifier": identifier, "message": map[string]any{"type": "hello", "protocol_version": 1, "device_id": ident.DeviceID}})
+			hello := map[string]any{"type": "hello", "protocol_version": 1, "device_id": ident.DeviceID}
+			if f.features != nil {
+				hello["features"] = f.features
+			}
+			if f.agent != nil {
+				hello["agent"] = f.agent
+			}
+			send(map[string]any{"identifier": identifier, "message": hello})
 			// The person pressed Run.
 			f.mu.Lock()
 			start := f.start
-			f.runs[start.RunID] = &fakeRun{status: "queued", final: make(chan protocol.StatusReport, 1)}
+			_, seeded := f.runs[start.RunID]
+			if start.RunID != "" && !seeded {
+				f.runs[start.RunID] = &fakeRun{status: "queued", final: make(chan protocol.StatusReport, 1)}
+			}
 			f.mu.Unlock()
+			if start.RunID == "" || seeded {
+				continue
+			}
 			raw, _ := json.Marshal(start)
 			var m map[string]any
 			_ = json.Unmarshal(raw, &m)
@@ -472,6 +488,12 @@ func isolate(t *testing.T) {
 
 func runDaemon(t *testing.T, f *fakeServer, work string) *fakeRun {
 	t.Helper()
+	return runDaemonWith(t, f, work, nil)
+}
+
+// runDaemonWith lets a test adjust the daemon before it runs; the run it returns is f.start's (or the seeded one).
+func runDaemonWith(t *testing.T, f *fakeServer, work string, adjust func(*Daemon)) *fakeRun {
+	t.Helper()
 	cfg := &config.Config{Server: f.srv.URL}
 	client := api.New(f.srv.URL, staticTokens{})
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -495,6 +517,9 @@ func runDaemon(t *testing.T, f *fakeServer, work string) *fakeRun {
 		Detect: func(context.Context) protocol.Tools {
 			return protocol.Tools{"claude": {Available: true, Version: "2.1.292"}}
 		}}
+	if adjust != nil {
+		adjust(d)
+	}
 	if err := d.Run(ctx); err != nil {
 		t.Fatalf("daemon: %v", err)
 	}
@@ -673,7 +698,7 @@ func TestCancelKillsTheTool(t *testing.T) {
 	}
 	_ = os.WriteFile(fix, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 	t.Setenv("PRODUCTOS_AGENT_FAKE_FIXTURE", fix)
-	t.Setenv("PRODUCTOS_AGENT_FAKE_EDITS", "")
+	t.Setenv("PRODUCTOS_AGENT_FAKE_EDITS", "src/drafts/store.ts=export const store = half;\\n")
 
 	f := newFakeServer(t)
 	f.start = startMessage("run-3", work, "productos/mob-p7-cancel")
@@ -686,6 +711,13 @@ func TestCancelKillsTheTool(t *testing.T) {
 	got := statuses(run.statuses)
 	if got[len(got)-1] != "cancelled" {
 		t.Errorf("statuses = %v", got)
+	}
+	// The edits made before the cancel are kept on the run's branch, and the checkout is clean for the next run.
+	if out := git(t, work, "status", "--porcelain"); out != "" {
+		t.Errorf("checkout not clean: %q", out)
+	}
+	if msg := git(t, work, "log", "-1", "--format=%s", "productos/mob-p7-cancel"); msg != "WIP: MOB-P7: Offline drafts are lost" {
+		t.Errorf("last commit on the run branch = %q", msg)
 	}
 }
 
@@ -701,7 +733,7 @@ func TestDirtyCheckoutFails(t *testing.T) {
 	if strings.Join(got, ",") != "starting,failed" {
 		t.Fatalf("statuses = %v", got)
 	}
-	if r := run.statuses[1].Reason; !strings.Contains(r, "uncommitted changes") {
+	if r := run.statuses[1].Reason; !strings.Contains(r, "uncommitted changes") || run.statuses[1].ReasonCode != "checkout_dirty" {
 		t.Errorf("reason = %q", r)
 	}
 }

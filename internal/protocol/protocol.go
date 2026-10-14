@@ -31,7 +31,11 @@ type Device struct {
 	LastSeenAt   *string          `json:"last_seen_at"`
 	RevokedAt    *string          `json:"revoked_at"`
 	Repositories []RepositoryLink `json:"repositories"`
-	CreatedAt    string           `json:"created_at"`
+	// LatestVersion is the newest agent release the server knows (null until its release job ran); Outdated says this
+	// device is below the server's minimum version and cannot start runs.
+	LatestVersion *string `json:"latest_version"`
+	Outdated      bool    `json:"outdated"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 // RepositoryLink is AgentDeviceRepositoryView.
@@ -108,14 +112,72 @@ const (
 	StatusCancelled    = "cancelled"
 )
 
-// StatusReport is the body of run_status / POST /runs/{id}/status.
+// Outcomes of a succeeded run: git decides (head != base is changed); no_change needs the tool's already_done claim
+// with evidence.
+const (
+	OutcomeChanged  = "changed"
+	OutcomeNoChange = "no_change"
+)
+
+// StatusReport is the body of run_status / POST /runs/{id}/status. Outcome, ReasonCode and Report are additive to
+// protocol 1: a server without them ignores them.
 type StatusReport struct {
-	Status     string `json:"status"`
-	Reason     string `json:"reason,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	HeadCommit string `json:"head_commit,omitempty"`
-	PRURL      string `json:"pr_url,omitempty"`
-	Summary    string `json:"summary,omitempty"`
+	Status     string  `json:"status"`
+	Reason     string  `json:"reason,omitempty"`
+	ReasonCode string  `json:"reason_code,omitempty"`
+	Outcome    string  `json:"outcome,omitempty"`
+	Branch     string  `json:"branch,omitempty"`
+	HeadCommit string  `json:"head_commit,omitempty"`
+	PRURL      string  `json:"pr_url,omitempty"`
+	Summary    string  `json:"summary,omitempty"`
+	Report     *Report `json:"report,omitempty"`
+}
+
+// Report is the run's structured result: the tool's own answer (claim … evidence) plus the facts the agent knows
+// itself (notes, files, tests, prior commits, tool, agent version). Every field is optional for the server.
+type Report struct {
+	Claim          string         `json:"claim,omitempty"`
+	Headline       string         `json:"headline,omitempty"`
+	CustomerChange *string        `json:"customer_change,omitempty"`
+	Changes        []string       `json:"changes,omitempty"`
+	Verification   []Verification `json:"verification,omitempty"`
+	LeftOut        []string       `json:"left_out,omitempty"`
+	OpenQuestions  []string       `json:"open_questions,omitempty"`
+	Evidence       []string       `json:"evidence,omitempty"`
+	Notes          []Note         `json:"notes,omitempty"`
+	Files          *FileStats     `json:"files,omitempty"`
+	Tests          *TestStats     `json:"tests,omitempty"`
+	PriorCommits   []string       `json:"prior_commits,omitempty"`
+	Tool           *ToolRef       `json:"tool,omitempty"`
+	AgentVersion   string         `json:"agent_version,omitempty"`
+}
+
+type Verification struct {
+	Command string `json:"command"`
+	Passed  bool   `json:"passed"`
+}
+
+// Note is a fact the agent adds to the report: push_failed, push_disabled, pr_failed, gh_missing, pr_exists,
+// tests_failing, permission_denied, prior_commits, update_available, updated, update_failed.
+type Note struct {
+	Code string `json:"code"`
+	Text string `json:"text"`
+}
+
+type FileStats struct {
+	Count     int `json:"count"`
+	Additions int `json:"additions"`
+	Deletions int `json:"deletions"`
+}
+
+type TestStats struct {
+	Runs   int `json:"runs"`
+	Failed int `json:"failed"`
+}
+
+type ToolRef struct {
+	Name    string  `json:"name"`
+	Version *string `json:"version"`
 }
 
 // Event kinds the device may send.
@@ -204,7 +266,28 @@ type ServerMessage struct {
 	Branch           string            `json:"branch,omitempty"`
 	ChangeDefinition *ChangeDefinition `json:"change_definition,omitempty"`
 	Options          *RunOptions       `json:"options,omitempty"`
-	Raw              json.RawMessage   `json:"-"`
+	// hello and run.start (additive): the server's capabilities and the agent version block.
+	Features []string       `json:"features,omitempty"`
+	Agent    *AgentVersions `json:"agent,omitempty"`
+}
+
+// HasFeature reports whether a hello announced an additive capability ("outcome", "report", "update").
+func (m ServerMessage) HasFeature(name string) bool {
+	for _, f := range m.Features {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AgentVersions is the server's version block: the newest release, the protocol floor, where archives live, and the
+// kill switch of automatic updates.
+type AgentVersions struct {
+	LatestVersion  string `json:"latest_version"`
+	MinimumVersion string `json:"minimum_version"`
+	DownloadBase   string `json:"download_base"`
+	UpdateEnabled  bool   `json:"update_enabled"`
 }
 
 type Subject struct {
@@ -243,11 +326,15 @@ type RunStart struct {
 	Branch           string
 	ChangeDefinition ChangeDefinition
 	Options          RunOptions
+	Agent            *AgentVersions
+	// Resumed: the run was handed over by the previous agent process (self-update); it was acknowledged already, so
+	// it starts from the checkout step without a second `starting`.
+	Resumed bool
 }
 
 // AsRunStart extracts a RunStart from a `run.start` envelope.
 func (m ServerMessage) AsRunStart() RunStart {
-	start := RunStart{RunID: m.RunID, Tool: m.Tool, Branch: m.Branch}
+	start := RunStart{RunID: m.RunID, Tool: m.Tool, Branch: m.Branch, Agent: m.Agent}
 	if m.Subject != nil {
 		start.Subject = *m.Subject
 	}

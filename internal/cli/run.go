@@ -3,10 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
 	"github.com/productos-technology/productos-agent/internal/daemon"
+	"github.com/productos-technology/productos-agent/internal/update"
 )
 
 func runCmd() *cobra.Command {
@@ -26,9 +29,10 @@ background.`,
 			if err := s.requireLogin(); err != nil {
 				return err
 			}
-			if state, _ := daemon.ReadState(); state != nil && state.Alive() {
+			if state, _ := daemon.ReadState(); state != nil && state.Alive() && !replacing(state.PID) {
 				return fmt.Errorf("another agent is already running (pid %d)", state.PID)
 			}
+			_ = os.Unsetenv(update.ReplacesEnv)
 			d := &daemon.Daemon{Config: s.cfg, API: s.api, Tokens: s.tokens, Log: s.log, Once: once}
 			err = d.Run(cmd.Context())
 			if errors.Is(err, daemon.ErrDeviceRevoked) {
@@ -39,4 +43,10 @@ background.`,
 	}
 	cmd.Flags().BoolVar(&once, "once", false, "exit after the first run finishes")
 	return cmd
+}
+
+// replacing: the published agent is this process before a self-update re-exec (Unix keeps the PID), or the one this
+// process was started to replace (Windows, PRODUCTOS_AGENT_REPLACES).
+func replacing(pid int) bool {
+	return pid == os.Getpid() || strconv.Itoa(pid) == os.Getenv(update.ReplacesEnv)
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/productos-technology/productos-agent/internal/stream"
@@ -104,5 +105,40 @@ func TestFailedTurn(t *testing.T) {
 	final := items[len(items)-1]
 	if !sawErrorLog || final.Kind != stream.Result || !final.IsFailure {
 		t.Errorf("final = %+v sawErrorLog=%v", final, sawErrorLog)
+	}
+}
+
+// With --output-schema the final agent message is the report's JSON: it is the result's Structured answer, and the
+// summary stays the last prose message.
+func TestSchemaFinalMessageIsTheReport(t *testing.T) {
+	items := feedFile(t, "structured_output.jsonl")
+	final := items[len(items)-1]
+	if final.Kind != stream.Result || final.IsFailure {
+		t.Fatalf("final = %+v", final)
+	}
+	if !strings.Contains(string(final.Structured), `"claim":"already_done"`) {
+		t.Errorf("structured = %s", final.Structured)
+	}
+	if !strings.HasPrefix(final.Text, "Drafts already persist in sqlite") {
+		t.Errorf("text = %q", final.Text)
+	}
+	for _, it := range items {
+		if it.Kind == stream.Message && strings.HasPrefix(it.Text, "{") {
+			t.Errorf("the report JSON leaked as a message: %q", it.Text)
+		}
+	}
+}
+
+func TestReportJSON(t *testing.T) {
+	for text, want := range map[string]bool{
+		`{"claim":"changed","headline":"x"}`:    true,
+		"```json\n{\"claim\":\"blocked\"}\n```": true,
+		`{"other":1}`:                           false,
+		"Should I use sqlite or localStorage?":  false,
+		`{"claim": broken`:                      false,
+	} {
+		if _, ok := reportJSON(text); ok != want {
+			t.Errorf("reportJSON(%q) = %v, want %v", text, ok, want)
+		}
 	}
 }

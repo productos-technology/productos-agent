@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -23,6 +24,13 @@ type Manager interface {
 	Uninstall() error
 	Start() error
 	Stop() error
+	// Restart stops and starts the installed service (after a manual update).
+	Restart() error
+	// Installed reports whether the service is installed.
+	Installed() bool
+	// Binary is the executable the installed service runs ("" when unknown): an update restarts the service only
+	// when it replaced that file.
+	Binary() string
 	// Describe explains what Install writes (shown to the person).
 	Describe() string
 }
@@ -40,13 +48,37 @@ func New() (Manager, error) {
 	return nil, fmt.Errorf("no service manager for %s", runtime.GOOS)
 }
 
-// Binary resolves the running executable's absolute path (what the unit runs).
+// Binary resolves the running executable's absolute path (what the unit runs). A Homebrew keg lives under a versioned
+// Cellar path that `brew upgrade` deletes, so the unit gets Homebrew's stable opt link instead.
 func Binary() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(exe)
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	return stablePath(resolved, func(p string) bool { _, err := os.Stat(p); return err == nil }), nil
+}
+
+// stablePath maps <prefix>/Cellar/productos-agent/<version>/bin/productos-agent to
+// <prefix>/opt/productos-agent/bin/productos-agent (/opt/homebrew, /usr/local, Linuxbrew) when that link exists.
+func stablePath(resolved string, exists func(string) bool) string {
+	i := strings.Index(resolved, "/Cellar/"+name+"/")
+	if i < 0 {
+		return resolved
+	}
+	rest := resolved[i+len("/Cellar/"+name+"/"):] // <version>/bin/productos-agent
+	slash := strings.Index(rest, "/")
+	if slash < 0 {
+		return resolved
+	}
+	opt := resolved[:i] + "/opt/" + name + "/" + rest[slash+1:]
+	if exists(opt) {
+		return opt
+	}
+	return resolved
 }
 
 func run(cmd string, args ...string) error {
@@ -148,8 +180,31 @@ func (s systemd) Uninstall() error {
 	return run("systemctl", "--user", "daemon-reload")
 }
 
-func (systemd) Start() error { return run("systemctl", "--user", "start", name+".service") }
-func (systemd) Stop() error  { return run("systemctl", "--user", "stop", name+".service") }
+func (systemd) Start() error   { return run("systemctl", "--user", "start", name+".service") }
+func (systemd) Stop() error    { return run("systemctl", "--user", "stop", name+".service") }
+func (systemd) Restart() error { return run("systemctl", "--user", "restart", name+".service") }
+func (s systemd) Installed() bool {
+	_, err := os.Stat(s.unitPath())
+	return err == nil
+}
+
+func (s systemd) Binary() string {
+	data, err := os.ReadFile(s.unitPath())
+	if err != nil {
+		return ""
+	}
+	return unitBinary(string(data))
+}
+
+// unitBinary reads `ExecStart=<binary> run` back from a unit Install wrote.
+func unitBinary(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart="); ok {
+			return strings.TrimSuffix(rest, " run")
+		}
+	}
+	return ""
+}
 
 // --- macOS: launchd agent ---
 
@@ -231,6 +286,39 @@ func (l launchd) Stop() error {
 	return nil
 }
 
+// Restart: kickstart -k kills the running agent and starts it again from the plist.
+func (l launchd) Restart() error {
+	if err := run("launchctl", "kickstart", "-k", l.domain()+"/"+label); err != nil {
+		_ = l.Stop()
+		return l.Start()
+	}
+	return nil
+}
+
+func (l launchd) Installed() bool {
+	_, err := os.Stat(l.plistPath())
+	return err == nil
+}
+
+func (l launchd) Binary() string {
+	data, err := os.ReadFile(l.plistPath())
+	if err != nil {
+		return ""
+	}
+	return plistBinary(string(data))
+}
+
+var programArguments = regexp.MustCompile(`<key>ProgramArguments</key>\s*<array>\s*<string>([^<]*)</string>`)
+
+// plistBinary reads the first ProgramArguments string back from a plist Install wrote.
+func plistBinary(plist string) string {
+	m := programArguments.FindStringSubmatch(plist)
+	if m == nil {
+		return ""
+	}
+	return strings.NewReplacer("&quot;", `"`, "&lt;", "<", "&gt;", ">", "&amp;", "&").Replace(m[1])
+}
+
 // --- Windows: Task Scheduler, at logon ---
 
 type schtasks struct{}
@@ -255,3 +343,11 @@ func (schtasks) Uninstall() error {
 
 func (schtasks) Start() error { return run("schtasks", "/Run", "/TN", taskName) }
 func (schtasks) Stop() error  { return run("schtasks", "/End", "/TN", taskName) }
+func (s schtasks) Restart() error {
+	_ = s.Stop()
+	return s.Start()
+}
+func (schtasks) Installed() bool { return run("schtasks", "/Query", "/TN", taskName) == nil }
+
+// Binary is unknown for the scheduled task (reading it back means parsing its XML): an update does not restart it.
+func (schtasks) Binary() string { return "" }

@@ -1,6 +1,7 @@
 // Package runner executes one `run.start`: prepares the checkout (clean tree, fetch, branch), drives the tool in
-// its JSON streaming mode, turns its stream into protocol events, relays questions and answers, and finishes with a
-// commit, a push, optionally a pull request, and the final status.
+// its JSON streaming mode, turns its stream into protocol events, relays questions and answers, and finishes with an
+// outcome git decides (a commit, a push, optionally a pull request; or nothing to change), a structured report and
+// the final status. Work the tool did is never lost: a run that fails or is cancelled commits it on its branch.
 package runner
 
 import (
@@ -9,28 +10,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/productos-technology/productos-agent/internal/config"
 	"github.com/productos-technology/productos-agent/internal/gitx"
 	"github.com/productos-technology/productos-agent/internal/protocol"
 	"github.com/productos-technology/productos-agent/internal/stream"
 	"github.com/productos-technology/productos-agent/internal/tools"
+	"github.com/productos-technology/productos-agent/internal/version"
 )
 
 const (
-	// RunTimeout matches AgentRun::STUCK_AFTER.
-	RunTimeout   = 2 * time.Hour
+	// RunTimeout stays under AgentRun::STUCK_AFTER (2 h): the agent's own `timeout` must win the race with the
+	// server's stuck sweeper, so the person reads what happened and the work is preserved.
+	RunTimeout   = 110 * time.Minute
 	maxQuestions = 10
 	maxOutput    = 1000
 	maxSummary   = 20000
-	maxReason    = 1000
+	// maxReason: `reason` is one line, the first line of the tool's last message at most.
+	maxReason = 280
+	// wrapUp bounds what happens after the tool: preserving work, pushing, the final status (even after a cancel).
+	wrapUp = 3 * time.Minute
 )
 
 // Answer is a `run.answer`.
@@ -45,10 +53,19 @@ type Run struct {
 	Reporter Reporter
 	Config   *config.Config
 	Log      *slog.Logger
-	// ToolPath overrides tool detection (tests).
-	ToolPath string
-	// Now and Timeout are overridable for tests.
+	// ToolPath overrides tool detection (tests); ToolVersion is the detected version, for report.tool.
+	ToolPath    string
+	ToolVersion string
+	// Timeout is overridable for tests.
 	Timeout time.Duration
+	// Supports asks whether the server's hello announced a feature; without "outcome" a no_change goes out as the old
+	// failure. Asked when the run ends: a handed-over run starts before the hello arrives.
+	Supports func(feature string) bool
+	// BeforePrepare runs once the run is acknowledged and before the checkout is touched (the daemon's self-update;
+	// it does not return when the process re-executes itself). The notes it returns go to the report.
+	BeforePrepare func(ctx context.Context, run *Run) []protocol.Note
+	// Notes are facts known before the run started (the daemon's `updated`).
+	Notes []protocol.Note
 
 	mu        sync.Mutex
 	cancelled bool
@@ -59,15 +76,23 @@ type Run struct {
 
 	emitter   *emitter
 	repo      *gitx.Repo
+	from      string
 	branch    string
 	base      string
 	sessionID string
 	reported  map[string]gitx.Change
 	tests     testStats
-	files     int
+	prior     []string
+	prose     string
+	answer    *toolAnswer
+	notes     []protocol.Note
 }
 
-type testStats struct{ passed, failed int }
+type testStats struct {
+	passed, failed int
+	// lastFailed is the command of the last test run when it failed (tests_failing).
+	lastFailed string
+}
 
 // New prepares a Run; Execute does the work.
 func New(start protocol.RunStart, reporter Reporter, cfg *config.Config, log *slog.Logger) *Run {
@@ -102,11 +127,22 @@ func (r *Run) Answer(a Answer) {
 	}
 }
 
+// Emit queues an event on the run's stream (the daemon's update log lines).
+func (r *Run) Emit(ev protocol.Event) { r.emitter.Emit(ev) }
+
+// Flush waits until every queued event landed on the server.
+func (r *Run) Flush(ctx context.Context) error {
+	_, err := r.emitter.Flush(ctx)
+	return err
+}
+
 func (r *Run) isCancelled() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cancelled
 }
+
+var reasonCodeRE = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
 
 // Execute runs everything and returns the final report it sent (or tried to send).
 func (r *Run) Execute(parent context.Context) protocol.StatusReport {
@@ -115,128 +151,181 @@ func (r *Run) Execute(parent context.Context) protocol.StatusReport {
 	r.mu.Lock()
 	r.cancelCtx = cancel
 	r.mu.Unlock()
+	for _, n := range r.Notes {
+		r.addNote(n)
+	}
 
 	r.emitter = newEmitter(r.Start.RunID, r.Reporter, r.Log)
 	final := r.execute(ctx)
-	r.emitter.Close(context.Background())
 	if r.isCancelled() {
+		r.mu.Lock()
+		reason := r.reason
+		r.mu.Unlock()
 		final = protocol.StatusReport{Status: protocol.StatusCancelled}
+		if reasonCodeRE.MatchString(reason) {
+			final.ReasonCode = reason
+		}
 	}
-	sendCtx, sendCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer sendCancel()
-	if err := r.Reporter.Status(sendCtx, r.Start.RunID, final); err != nil && !errors.Is(err, ErrRunFinished) {
+	// The run's own context may be over (cancel, timeout): what follows gets its own time.
+	wrap, wrapCancel := context.WithTimeout(context.Background(), wrapUp)
+	defer wrapCancel()
+	if final.Status != protocol.StatusSucceeded {
+		r.preserve(wrap, &final)
+	}
+	if r.tests.lastFailed != "" {
+		r.addNote(protocol.Note{Code: noteTestsFailing, Text: "the last test run failed: " + oneLine(r.tests.lastFailed, 200)})
+	}
+	final.Summary = clip(r.summary(final), maxSummary)
+	final.Report = r.report()
+	r.emitter.Close(context.Background())
+	if err := r.Reporter.Status(wrap, r.Start.RunID, final); err != nil && !errors.Is(err, ErrRunFinished) {
 		r.Log.Error("final status not delivered", "status", final.Status, "error", err)
 	}
 	return final
 }
 
 func (r *Run) execute(ctx context.Context) protocol.StatusReport {
-	if err := r.status(ctx, protocol.StatusStarting); err != nil {
-		return r.fail("could not acknowledge the run: " + err.Error())
+	if !r.Start.Resumed { // a handed-over run was acknowledged by the previous process
+		if err := r.status(ctx, protocol.StatusStarting); err != nil {
+			return r.fail(serverCode(err), "could not acknowledge the run: "+err.Error())
+		}
 	}
 	driver, ok := DriverFor(r.Start.Tool)
 	if !ok {
-		return r.fail("unknown tool " + r.Start.Tool)
+		return r.fail(codeInternal, "unknown tool "+r.Start.Tool)
 	}
 	bin := r.ToolPath
 	if bin == "" {
 		path, found := tools.Path(r.Start.Tool)
 		if !found {
-			return r.fail(fmt.Sprintf("%s is not installed on this machine", r.Start.Tool))
+			return r.fail(codeToolMissing, fmt.Sprintf("%s is not installed on this machine", r.Start.Tool))
 		}
 		bin = path
 	}
-	if err := r.prepare(ctx); err != nil {
-		return r.fail(err.Error())
+	if r.BeforePrepare != nil && !r.Start.Resumed {
+		for _, n := range r.BeforePrepare(ctx, r) {
+			r.addNote(n)
+		}
+	}
+	if code, err := r.prepare(ctx); err != nil {
+		return r.fail(code, err.Error())
 	}
 	if err := r.status(ctx, protocol.StatusRunning); err != nil {
-		return r.fail("could not report the run as running: " + err.Error())
+		return r.fail(serverCode(err), "could not report the run as running: "+err.Error())
 	}
-	r.info(fmt.Sprintf("Branch `%s` created from `origin/%s` in %s.", r.branch, r.Start.Repository.DefaultBranch, r.repo.Dir))
+	r.info(fmt.Sprintf("Branch `%s` created from `origin/%s` in %s.", r.branch, r.from, r.repo.Dir))
+	r.lookupPriorCommits(ctx)
 
-	prompt := buildPrompt(r.Start, r.repo.Dir, r.branch, driver.AsksWithTool())
-	promptFile, err := r.writePromptFile(prompt)
-	if err != nil {
-		return r.fail("could not write the change definition: " + err.Error())
+	inv := Invocation{Bin: bin, Dir: r.repo.Dir, Config: r.Config}
+	if driver.SchemaFile() {
+		path, err := writeSchemaFile()
+		if err != nil {
+			return r.fail(codeInternal, "could not write the report schema: "+err.Error())
+		}
+		defer os.Remove(path)
+		inv.SchemaFile = path
 	}
-	defer os.Remove(promptFile)
 
-	var lastResult string
-	input := prompt
+	input := buildPrompt(r.Start, r.repo.Dir, r.branch, driver.AsksWithTool(), r.prior)
 	for round := 0; ; round++ {
-		if r.isCancelled() {
-			return protocol.StatusReport{Status: protocol.StatusCancelled}
+		if stop, ok := r.interrupted(ctx); ok {
+			return stop
 		}
-		out, err := r.runTool(ctx, driver, bin, input)
-		if r.isCancelled() {
-			return protocol.StatusReport{Status: protocol.StatusCancelled}
-		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return r.fail(fmt.Sprintf("the run exceeded %s", r.Timeout))
-		}
-		if dead := r.emitter.Dead(); dead != nil {
-			return r.fail("the server closed the run: " + dead.Error())
+		out, err := r.runTool(ctx, driver, inv, input)
+		if stop, ok := r.interrupted(ctx); ok {
+			return stop
 		}
 		if err != nil {
-			return r.fail(err.Error())
-		}
-		lastResult = out.result
-		if out.failed {
-			reason := strings.TrimSpace(out.result)
-			if reason == "" {
-				reason = r.Start.Tool + " ended with an error"
+			var re *runError
+			if errors.As(err, &re) {
+				return r.fail(re.code, re.msg)
 			}
-			return r.fail(reason)
+			return r.fail(codeInternal, err.Error())
 		}
+		r.answer = extractReport(out.items)
+		if out.failed {
+			// The result is the error; the summary keeps what the tool last said.
+			r.prose = firstNonEmpty(strings.TrimSpace(out.prose), r.prose)
+			return r.fail(out.failCode, firstNonEmpty(firstLine(out.result), r.Start.Tool+" ended with an error"))
+		}
+		r.prose = firstNonEmpty(strings.TrimSpace(out.result), strings.TrimSpace(out.prose), r.prose)
 		question := out.question
-		if question == nil && !out.changed && looksLikeQuestion(out.result) {
+		if question == nil && r.answer != nil && r.answer.Claim == claimNeedsInput && r.answer.Question != "" {
+			question = &stream.Item{Kind: stream.Question, Text: r.answer.Question, Options: r.answer.Options}
+		}
+		if question == nil && r.answer == nil && !out.changed && looksLikeQuestion(out.result) {
 			question = &stream.Item{Kind: stream.Question, Text: out.result}
 		}
 		if question == nil {
 			break
 		}
 		if round+1 >= maxQuestions {
-			return r.fail("the tool asked too many questions")
+			return r.fail(codeTooManyQuestions, fmt.Sprintf("the tool asked more than %d questions", maxQuestions-1))
+		}
+		if out.sessionID == "" {
+			return r.fail(codeNoSession, "the tool asked a question but gave no session to resume")
 		}
 		answer, err := r.ask(ctx, question)
 		if err != nil {
-			if r.isCancelled() {
-				return protocol.StatusReport{Status: protocol.StatusCancelled}
+			if stop, ok := r.interrupted(ctx); ok {
+				return stop
 			}
-			return r.fail(err.Error())
-		}
-		if out.sessionID == "" {
-			return r.fail("the tool asked a question but gave no session to resume")
+			return r.fail(serverCode(err), err.Error())
 		}
 		r.sessionID = out.sessionID
 		input = answerPrompt(question.Text, answer.Text)
 	}
-	return r.finish(ctx, lastResult)
+	return r.finish(ctx)
 }
 
-// prepare: open the checkout, insist on a clean tree, fetch, branch from origin/<default>.
-func (r *Run) prepare(ctx context.Context) error {
+// interrupted reports why the run must stop now, if it must: cancelled, out of time, the agent stopping, or the
+// server refusing the run.
+func (r *Run) interrupted(ctx context.Context) (protocol.StatusReport, bool) {
+	switch {
+	case r.isCancelled():
+		return protocol.StatusReport{Status: protocol.StatusCancelled}, true
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return r.fail(codeTimeout, fmt.Sprintf("the run exceeded the agent's limit of %s", r.Timeout)), true
+	case ctx.Err() != nil:
+		return r.fail(codeInternal, "the agent stopped while the run was in progress"), true
+	}
+	if dead := r.emitter.Dead(); dead != nil {
+		return r.fail(codeServerClosed, "the server closed the run: "+dead.Error()), true
+	}
+	return protocol.StatusReport{}, false
+}
+
+// serverCode: a refusal from the server (the run is over there) is server_closed; anything else is internal.
+func serverCode(err error) string {
+	if errors.Is(err, ErrRunFinished) {
+		return codeServerClosed
+	}
+	return codeInternal
+}
+
+// prepare: open the checkout, insist on a clean tree, fetch, branch from origin/<default>. The code says what failed.
+func (r *Run) prepare(ctx context.Context) (string, error) {
 	repo, err := gitx.Open(r.Start.Repository.LocalPath)
 	if err != nil {
-		return err
+		return codeCheckoutMissing, err
 	}
 	r.repo = repo
 	clean, err := repo.IsClean(ctx)
 	if err != nil {
-		return err
+		return codeInternal, err
 	}
 	if !clean {
-		return fmt.Errorf("the checkout at %s has uncommitted changes; commit or stash them and run again", repo.Dir)
+		return codeCheckoutDirty, fmt.Errorf("the checkout at %s has uncommitted changes; commit or stash them and run again", repo.Dir)
 	}
 	from := r.Start.Repository.DefaultBranch
 	if from == "" {
-		from, err = repo.DefaultBranch(ctx)
-		if err != nil {
-			return err
+		if from, err = repo.DefaultBranch(ctx); err != nil {
+			return codeFetchFailed, err
 		}
 	}
+	r.from = from
 	if err := repo.Fetch(ctx, from); err != nil {
-		return err
+		return codeFetchFailed, err
 	}
 	name := strings.TrimSpace(r.Start.Branch)
 	if name == "" || !gitx.ValidBranch(name) {
@@ -246,43 +335,78 @@ func (r *Run) prepare(ctx context.Context) error {
 	for i := 2; repo.BranchExists(ctx, candidate) || repo.RemoteBranchExists(ctx, candidate); i++ {
 		candidate = fmt.Sprintf("%s-%d", name, i)
 		if i > 50 {
-			return fmt.Errorf("branch %s and 50 variants already exist", name)
+			return codeBranchFailed, fmt.Errorf("branch %s and 50 variants already exist", name)
 		}
 	}
 	if err := repo.CreateBranch(ctx, candidate, from); err != nil {
-		return err
+		return codeBranchFailed, err
 	}
 	r.branch = candidate
-	r.base, err = repo.Head(ctx)
-	return err
+	if r.base, err = repo.Head(ctx); err != nil {
+		return codeInternal, err
+	}
+	return "", nil
 }
 
-func (r *Run) writePromptFile(prompt string) (string, error) {
-	dir := os.TempDir()
-	f, err := os.CreateTemp(dir, "productos-run-*.md")
+// lookupPriorCommits finds the commits on origin/<default> that already carry the trailer: an earlier run or someone
+// by hand may have done (part of) the work. The prompt lists them and the report keeps them.
+func (r *Run) lookupPriorCommits(ctx context.Context) {
+	trailer := strings.TrimSpace(r.Start.Options.CommitTrailer)
+	if trailer == "" {
+		return
+	}
+	commits, err := r.repo.CommitsWithTrailer(ctx, "origin/"+r.from, trailer, 10)
+	if err != nil {
+		r.Log.Debug("prior commits", "error", err)
+		return
+	}
+	r.prior = commits
+	if len(commits) > 0 {
+		text := fmt.Sprintf("%d earlier commit(s) on origin/%s carry %s", len(commits), r.from, trailer)
+		r.addNote(protocol.Note{Code: notePriorCommits, Text: text})
+		r.info(text + ".")
+	}
+}
+
+func writeSchemaFile() (string, error) {
+	f, err := os.CreateTemp("", "productos-report-*.json")
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	if err := f.Chmod(0o600); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		r.Log.Debug("chmod on temp file", "error", err)
+	if _, err := f.Write(reportSchemaSource); err != nil {
+		os.Remove(f.Name())
+		return "", err
 	}
-	_, err = io.WriteString(f, prompt)
-	return f.Name(), err
+	return f.Name(), nil
 }
 
 type toolOutcome struct {
-	result    string
+	result    string // the result's text: the tool's final prose
+	prose     string // the last assistant message
 	failed    bool
+	failCode  string
 	question  *stream.Item
 	sessionID string
 	changed   bool
+	items     []stream.Item // messages and the result, for extractReport
 }
 
+// runError carries the reason code of a tool session that went wrong.
+type runError struct{ code, msg string }
+
+func (e *runError) Error() string { return e.msg }
+
 // runTool runs one tool session (initial or resumed) to its end, streaming events as it goes.
-func (r *Run) runTool(ctx context.Context, driver Driver, bin, input string) (toolOutcome, error) {
-	cmd := driver.Command(ctx, bin, r.repo.Dir, r.sessionID, r.Config)
+func (r *Run) runTool(ctx context.Context, driver Driver, inv Invocation, input string) (toolOutcome, error) {
+	inv.SessionID = r.sessionID
+	cmd := driver.Command(ctx, inv)
 	setProcessGroup(cmd)
+	// On timeout, take the whole group down (the tool's shells and test runners too), not only the tool.
+	cmd.Cancel = func() error {
+		killProcessGroup(cmd.Process.Pid)
+		return nil
+	}
 	cmd.Stdin = strings.NewReader(input)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -292,7 +416,11 @@ func (r *Run) runTool(ctx context.Context, driver Driver, bin, input string) (to
 	cmd.Stderr = &limitedWriter{w: &stderr, max: 64 << 10}
 	r.Log.Info("starting tool", "tool", driver.Name(), "resume", r.sessionID != "")
 	if err := cmd.Start(); err != nil {
-		return toolOutcome{}, fmt.Errorf("could not start %s: %w", driver.Name(), err)
+		code := codeToolCrashed
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			code = codeToolMissing
+		}
+		return toolOutcome{}, &runError{code, fmt.Sprintf("could not start %s: %v", driver.Name(), err)}
 	}
 	r.mu.Lock()
 	r.procPID = cmd.Process.Pid
@@ -323,19 +451,14 @@ func (r *Run) runTool(ctx context.Context, driver Driver, bin, input string) (to
 		return out, nil
 	}
 	if waitErr != nil && !sawResult {
-		tail := strings.TrimSpace(stderr.String())
-		if len(tail) > 600 {
-			tail = "…" + tail[len(tail)-600:]
+		why := lastLine(stderr.String())
+		if why == "" {
+			why = waitErr.Error()
 		}
-		if tail == "" {
-			tail = waitErr.Error()
-		}
-		return out, fmt.Errorf("%s exited: %s", driver.Name(), tail)
+		return out, &runError{crashCode(stderr.String()), fmt.Sprintf("%s exited (%v): %s", driver.Name(), waitErr, why)}
 	}
-	if !sawResult && !out.failed {
-		if out.result == "" {
-			out.result = "the tool ended without a final message"
-		}
+	if !sawResult && !out.failed && out.result == "" {
+		out.result = firstNonEmpty(out.prose, "the tool ended without a final message")
 	}
 	return out, nil
 }
@@ -345,6 +468,8 @@ func (r *Run) handle(ctx context.Context, item stream.Item, out *toolOutcome, pe
 	case stream.Session:
 		out.sessionID = item.SessionID
 	case stream.Message:
+		out.prose = item.Text
+		out.items = append(out.items, item)
 		r.emitter.Emit(protocol.Message("assistant", clip(item.Text, 20000)))
 	case stream.ToolUse:
 		pending[item.ID] = item
@@ -364,8 +489,10 @@ func (r *Run) handle(ctx context.Context, item stream.Item, out *toolOutcome, pe
 			passed := !item.IsError
 			if passed {
 				r.tests.passed++
+				r.tests.lastFailed = ""
 			} else {
 				r.tests.failed++
+				r.tests.lastFailed = command
 			}
 			r.emitter.Emit(protocol.Event{Kind: protocol.KindTest, Payload: protocol.TestPayload{Command: clip(command, 500), Passed: passed, Summary: tail(item.Output, 500), DurationMS: duration}})
 			return
@@ -384,6 +511,13 @@ func (r *Run) handle(ctx context.Context, item stream.Item, out *toolOutcome, pe
 		*sawResult = true
 		out.result = item.Text
 		out.failed = item.IsFailure
+		if item.IsFailure {
+			out.failCode = toolFailureCode(item.Subtype, item.ErrorStatus, item.Text)
+		}
+		out.items = append(out.items, item)
+		for _, d := range item.Denials {
+			r.addNote(denialNote(d))
+		}
 	case stream.Log:
 		if item.Level == "warn" || item.Level == "error" {
 			r.emitter.Emit(protocol.Log(item.Level, clip(item.Text, 2000)))
@@ -424,8 +558,7 @@ func (r *Run) refreshChanges(ctx context.Context, out *toolOutcome) {
 			delete(r.reported, path)
 		}
 	}
-	r.files = len(r.reported)
-	if r.files > 0 {
+	if len(r.reported) > 0 {
 		out.changed = true
 	}
 }
@@ -453,131 +586,270 @@ func (r *Run) ask(ctx context.Context, q *stream.Item) (Answer, error) {
 	}
 }
 
-// finish commits what the tool left, pushes, opens the PR and builds the final report.
-func (r *Run) finish(ctx context.Context, result string) protocol.StatusReport {
-	key := r.Start.Subject.Key
-	title := strings.TrimSpace(r.Start.Subject.Name)
-	message := key
-	if title != "" {
-		message = key + ": " + title
-	}
-	if r.Start.Options.CommitTrailer != "" {
-		message += "\n\n" + r.Start.Options.CommitTrailer
-	}
+// finish commits what the tool left and lets git decide the outcome (reconcile); on `changed` it pushes and opens
+// the pull request.
+func (r *Run) finish(ctx context.Context) protocol.StatusReport {
+	message := r.commitMessage("")
 	committed, err := r.repo.CommitAll(ctx, message)
 	if err != nil {
-		return r.fail("commit failed: " + err.Error())
+		return r.fail(codeCommitFailed, "commit failed: "+err.Error())
 	}
 	if committed {
 		r.info("Committed the remaining changes.")
 	}
 	head, err := r.repo.Head(ctx)
 	if err != nil {
-		return r.fail(err.Error())
+		return r.fail(codeInternal, err.Error())
 	}
-	if head == r.base {
-		reason := "the tool made no changes"
-		if s := strings.TrimSpace(result); s != "" {
-			reason += ": " + s
+	v := reconcile(r.answer, gitFacts{Base: r.base, Head: head})
+	switch {
+	case v.Status == protocol.StatusFailed:
+		reason := v.Reason
+		if v.ReasonCode == codeNoChanges && r.answer == nil {
+			if line := firstLine(r.prose); line != "" {
+				reason += ": " + line
+			}
 		}
-		return r.fail(reason)
-	}
-	var notes []string
-	pushed := false
-	if r.Config.PushEnabled() {
-		if err := r.repo.Push(ctx, r.branch); err != nil {
-			r.warn("Push failed: " + err.Error())
-			notes = append(notes, "The branch was not pushed: "+err.Error())
-		} else {
-			pushed = true
-			r.info(fmt.Sprintf("Pushed `%s` to origin.", r.branch))
+		return r.fail(v.ReasonCode, reason)
+	case v.Outcome == protocol.OutcomeNoChange:
+		if !r.supports("outcome") {
+			// A server without `outcome` knows no no_change: the old failure, as before.
+			return r.fail(codeNoChanges, "the tool made no changes")
 		}
-	}
-	prURL := ""
-	if pushed && r.Start.Options.OpenPR {
-		url, err := r.openPR(ctx, message, result)
-		if err != nil {
-			r.warn("Pull request not opened: " + err.Error())
-			notes = append(notes, "No pull request was opened: "+err.Error())
-		} else if url != "" {
-			prURL = url
-			r.info("Opened " + url)
-		}
+		r.info("Nothing to change: the tool found the change already in place.")
+		return protocol.StatusReport{Status: protocol.StatusSucceeded, Outcome: protocol.OutcomeNoChange}
 	}
 	return protocol.StatusReport{
 		Status:     protocol.StatusSucceeded,
+		Outcome:    protocol.OutcomeChanged,
 		Branch:     r.branch,
 		HeadCommit: head,
-		PRURL:      prURL,
-		Summary:    clip(r.summary(result, head, prURL, notes), maxSummary),
+		PRURL:      r.publish(ctx, message),
 	}
 }
 
-func (r *Run) openPR(ctx context.Context, title, body string) (string, error) {
-	gh, err := exec.LookPath("gh")
+// publish pushes the branch and opens the pull request. Neither can fail a run that has commits: what went wrong
+// becomes a report note.
+func (r *Run) publish(ctx context.Context, message string) string {
+	if !r.push(ctx) {
+		return ""
+	}
+	if !r.Start.Options.OpenPR {
+		return ""
+	}
+	url, note := r.openPR(ctx, message)
+	if note != nil {
+		if note.Code != notePRExists {
+			r.warn("Pull request not opened: " + note.Text)
+		}
+		r.addNote(*note)
+	}
+	if url != "" {
+		r.info("Pull request: " + url)
+	}
+	return url
+}
+
+// push sends the run's branch to origin when push is on; a failure is a note, never the run's failure.
+func (r *Run) push(ctx context.Context) bool {
+	if !r.Config.PushEnabled() {
+		r.addNote(protocol.Note{Code: notePushDisabled, Text: fmt.Sprintf("push is off in config.json: %s stays on this machine", r.branch)})
+		return false
+	}
+	if err := r.repo.Push(ctx, r.branch); err != nil {
+		r.warn("Push failed: " + err.Error())
+		r.addNote(protocol.Note{Code: notePushFailed, Text: oneLine(err.Error(), maxReason)})
+		return false
+	}
+	r.info(fmt.Sprintf("Pushed `%s` to origin.", r.branch))
+	return true
+}
+
+// preserve keeps what the tool did when the run did not succeed: uncommitted work is committed on the run's branch
+// (`WIP: <key>: <name>` + the trailer, without hooks; stashed if even that fails), pushed when push is on, and the
+// branch and commit go out with the final status. The checkout is left clean for the next run.
+func (r *Run) preserve(ctx context.Context, final *protocol.StatusReport) {
+	if r.repo == nil || r.base == "" {
+		return // nothing ran in the checkout
+	}
+	clean, err := r.repo.IsClean(ctx)
 	if err != nil {
-		return "", errors.New("gh is not installed")
+		r.Log.Warn("cannot read the checkout after the run", "error", err)
+		return
 	}
-	prTitle := strings.SplitN(title, "\n", 2)[0]
-	prBody := strings.TrimSpace(body)
-	if prBody == "" {
-		prBody = "Change executed by the ProductOS Agent."
+	if !clean {
+		r.refreshChanges(ctx, &toolOutcome{})
+		message := r.commitMessage("WIP: ")
+		if _, err := r.repo.CommitWIP(ctx, message); err != nil {
+			r.warn("Could not commit the work in progress: " + oneLine(err.Error(), 500))
+			if serr := r.repo.Stash(ctx, message); serr != nil {
+				r.warn("Could not stash it either; the changes stay in the checkout: " + oneLine(serr.Error(), 500))
+			} else {
+				r.warn(fmt.Sprintf("The work in progress is in `git stash list` of %s.", r.repo.Dir))
+			}
+		} else {
+			r.info(fmt.Sprintf("Committed the work in progress on `%s`.", r.branch))
+		}
 	}
-	if r.Start.Subject.URL != "" {
-		prBody += "\n\n" + r.Start.Subject.URL
+	head, err := r.repo.Head(ctx)
+	if err != nil || head == r.base {
+		return
+	}
+	final.Branch, final.HeadCommit = r.branch, head
+	r.push(ctx)
+}
+
+func (r *Run) commitMessage(prefix string) string {
+	message := prefix + r.Start.Subject.Key
+	if title := strings.TrimSpace(r.Start.Subject.Name); title != "" {
+		message += ": " + title
 	}
 	if r.Start.Options.CommitTrailer != "" {
-		prBody += "\n\n" + r.Start.Options.CommitTrailer
+		message += "\n\n" + r.Start.Options.CommitTrailer
 	}
-	cmd := exec.CommandContext(ctx, gh, "pr", "create", "--title", prTitle, "--body", prBody, "--head", r.branch, "--base", r.Start.Repository.DefaultBranch)
-	cmd.Dir = r.repo.Dir
-	cmd.Env = append(cmd.Environ(), "GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1")
-	out, err := cmd.CombinedOutput()
+	return message
+}
+
+// openPR opens the pull request with gh; what stops it is a note (gh_missing, pr_exists with the existing URL,
+// pr_failed).
+func (r *Run) openPR(ctx context.Context, message string) (string, *protocol.Note) {
+	gh, err := exec.LookPath("gh")
 	if err != nil {
-		return "", errors.New(strings.TrimSpace(firstNonEmpty(string(out), err.Error())))
+		return "", &protocol.Note{Code: noteGHMissing, Text: "gh is not installed: open the pull request from the pushed branch"}
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "https://") {
+	title := strings.SplitN(message, "\n", 2)[0]
+	body := strings.TrimSpace(r.prose)
+	if body == "" && r.answer != nil {
+		body = r.answer.Headline
+	}
+	if body == "" {
+		body = "Change executed by the ProductOS Agent."
+	}
+	if r.Start.Subject.URL != "" {
+		body += "\n\n" + r.Start.Subject.URL
+	}
+	if r.Start.Options.CommitTrailer != "" {
+		body += "\n\n" + r.Start.Options.CommitTrailer
+	}
+	out, err := r.gh(ctx, gh, "pr", "create", "--title", title, "--body", body, "--head", r.branch, "--base", r.from)
+	if err != nil {
+		text := oneLine(firstNonEmpty(out, err.Error()), maxReason)
+		if strings.Contains(strings.ToLower(out), "already exists") {
+			if url, verr := r.gh(ctx, gh, "pr", "view", r.branch, "--json", "url", "--jq", ".url"); verr == nil && strings.HasPrefix(strings.TrimSpace(url), "https://") {
+				url = strings.TrimSpace(url)
+				return url, &protocol.Note{Code: notePRExists, Text: url}
+			}
+		}
+		return "", &protocol.Note{Code: notePRFailed, Text: text}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "https://") {
 			return line, nil
 		}
 	}
 	return "", nil
 }
 
-func (r *Run) summary(result, head, prURL string, notes []string) string {
+func (r *Run) gh(ctx context.Context, gh string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, gh, args...)
+	cmd.Dir = r.repo.Dir
+	cmd.Env = append(cmd.Environ(), "GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "NO_COLOR=1")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// summary is the tool's final prose (the whole of it) and the facts under it.
+func (r *Run) summary(final protocol.StatusReport) string {
 	var b strings.Builder
-	if s := strings.TrimSpace(result); s != "" {
-		b.WriteString(s)
+	text := strings.TrimSpace(r.prose)
+	if text == "" && r.answer != nil {
+		text = r.answer.Headline
+	}
+	if text != "" {
+		b.WriteString(text)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("---\n")
-	fmt.Fprintf(&b, "- Branch `%s` at `%s`\n", r.branch, head[:min(12, len(head))])
-	adds, dels := 0, 0
-	for _, c := range r.reported {
-		adds += c.Additions
-		dels += c.Deletions
+	var facts []string
+	if final.Branch != "" && final.HeadCommit != "" {
+		facts = append(facts, fmt.Sprintf("Branch `%s` at `%s`", final.Branch, final.HeadCommit[:min(12, len(final.HeadCommit))]))
 	}
-	fmt.Fprintf(&b, "- %d file(s) changed, +%d −%d\n", len(r.reported), adds, dels)
+	if files := r.fileStats(); files.Count > 0 {
+		facts = append(facts, fmt.Sprintf("%d file(s) changed, +%d −%d", files.Count, files.Additions, files.Deletions))
+	}
 	if r.tests.passed+r.tests.failed > 0 {
-		fmt.Fprintf(&b, "- Test runs: %d passed, %d failed\n", r.tests.passed, r.tests.failed)
+		facts = append(facts, fmt.Sprintf("Test runs: %d passed, %d failed", r.tests.passed, r.tests.failed))
 	}
-	if prURL != "" {
-		fmt.Fprintf(&b, "- Pull request: %s\n", prURL)
+	if final.PRURL != "" {
+		facts = append(facts, "Pull request: "+final.PRURL)
 	}
-	for _, n := range notes {
-		fmt.Fprintf(&b, "- %s\n", n)
+	for _, n := range r.notes {
+		facts = append(facts, n.Text)
 	}
-	return b.String()
+	if len(facts) > 0 {
+		b.WriteString("---\n")
+		for _, f := range facts {
+			fmt.Fprintf(&b, "- %s\n", f)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// report is the tool's structured answer plus what the agent knows itself.
+func (r *Run) report() *protocol.Report {
+	rep := &protocol.Report{AgentVersion: version.String(), Tool: &protocol.ToolRef{Name: r.Start.Tool}}
+	if r.ToolVersion != "" {
+		v := r.ToolVersion
+		rep.Tool.Version = &v
+	}
+	if a := r.answer; a != nil {
+		rep.Claim, rep.Headline, rep.CustomerChange = a.Claim, a.Headline, a.CustomerChange
+		rep.Changes, rep.Verification, rep.LeftOut, rep.OpenQuestions, rep.Evidence = a.Changes, a.Verification, a.LeftOut, a.OpenQuestions, a.Evidence
+	}
+	if files := r.fileStats(); files.Count > 0 {
+		rep.Files = &files
+	}
+	if runs := r.tests.passed + r.tests.failed; runs > 0 {
+		rep.Tests = &protocol.TestStats{Runs: runs, Failed: r.tests.failed}
+	}
+	rep.PriorCommits = r.prior
+	rep.Notes = append([]protocol.Note(nil), r.notes...)
+	fitReport(rep)
+	return rep
+}
+
+func (r *Run) fileStats() protocol.FileStats {
+	stats := protocol.FileStats{Count: len(r.reported)}
+	for _, c := range r.reported {
+		stats.Additions += c.Additions
+		stats.Deletions += c.Deletions
+	}
+	return stats
+}
+
+func (r *Run) addNote(n protocol.Note) {
+	for _, have := range r.notes {
+		if have == n {
+			return
+		}
+	}
+	if len(r.notes) < 30 {
+		r.notes = append(r.notes, n)
+	}
+}
+
+func (r *Run) supports(feature string) bool {
+	return r.Supports != nil && r.Supports(feature)
 }
 
 func (r *Run) status(ctx context.Context, status string) error {
 	return r.Reporter.Status(ctx, r.Start.RunID, protocol.StatusReport{Status: status})
 }
 
-func (r *Run) fail(reason string) protocol.StatusReport {
-	r.Log.Warn("run failed", "reason", reason)
-	return protocol.StatusReport{Status: protocol.StatusFailed, Reason: clip(reason, maxReason)}
+// fail ends the run with a reason code and a one-line reason.
+func (r *Run) fail(code, reason string) protocol.StatusReport {
+	reason = oneLine(reason, maxReason)
+	r.Log.Warn("run failed", "code", code, "reason", reason)
+	return protocol.StatusReport{Status: protocol.StatusFailed, ReasonCode: code, Reason: reason}
 }
 
 func (r *Run) info(text string) { r.emitter.Emit(protocol.Log("info", text)) }
@@ -585,9 +857,13 @@ func (r *Run) warn(text string) { r.emitter.Emit(protocol.Log("warn", text)) }
 
 // --- helpers ---
 
+// clip cuts at n bytes on a rune boundary.
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }
@@ -597,7 +873,21 @@ func tail(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…" + s[len(s)-n:]
+	cut := len(s) - n
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "…" + s[cut:]
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {
@@ -617,7 +907,11 @@ func trimInput(input map[string]any) any {
 	out := make(map[string]any, len(input))
 	for k, v := range input {
 		if s, ok := v.(string); ok && len(s) > 500 {
-			out[k] = s[:500] + fmt.Sprintf("… (%d more chars)", len(s)-500)
+			cut := 500
+			for cut > 0 && !utf8.RuneStart(s[cut]) {
+				cut--
+			}
+			out[k] = s[:cut] + fmt.Sprintf("… (%d more chars)", len(s)-cut)
 			continue
 		}
 		out[k] = v
@@ -632,9 +926,10 @@ type limitedWriter struct {
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
 	if l.w.Len() >= l.max {
-		// keep the tail: drop the first half
-		b := l.w.Bytes()
-		l.w = bytes.NewBuffer(append([]byte{}, b[len(b)/2:]...))
+		// keep the tail: drop the first half, in place (the caller reads the same buffer afterwards)
+		keep := append([]byte{}, l.w.Bytes()[l.w.Len()/2:]...)
+		l.w.Reset()
+		l.w.Write(keep)
 	}
 	l.w.Write(p)
 	return len(p), nil

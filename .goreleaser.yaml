@@ -59,7 +59,7 @@ release:
   footer: |
     ## Install
 
-    - macOS: `brew install productos/tap/productos-agent`
+    - macOS: `brew install productos-technology/tap/productos-agent`
     - Linux: `curl -fsSL https://productos.technology/install.sh | sh`
     - Windows: `winget install ProductOS.Agent`
 

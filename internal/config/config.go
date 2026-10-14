@@ -24,11 +24,23 @@ type Config struct {
 	// Extra arguments appended to the tool command lines, for people who need a model or a flag.
 	ClaudeArgs []string `json:"claude_args,omitempty"`
 	CodexArgs  []string `json:"codex_args,omitempty"`
-	// ClaudePermissionMode overrides the default "acceptEdits".
+	// ClaudePermissionMode overrides the default "acceptEdits"; CodexSandbox the default "workspace-write".
 	ClaudePermissionMode string `json:"claude_permission_mode,omitempty"`
+	CodexSandbox         string `json:"codex_sandbox,omitempty"`
+	// AutoUpdate lets the daemon update itself to the server's latest release before a run or when idle (default
+	// true). PRODUCTOS_AGENT_NO_UPDATE=1 turns it off too.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
 }
 
 func (c *Config) PushEnabled() bool { return c.Push == nil || *c.Push }
+
+// AutoUpdateEnabled: on unless config.json or the environment turns it off.
+func (c *Config) AutoUpdateEnabled() bool {
+	if os.Getenv("PRODUCTOS_AGENT_NO_UPDATE") == "1" {
+		return false
+	}
+	return c.AutoUpdate == nil || *c.AutoUpdate
+}
 
 func file() (string, error) {
 	dir, err := paths.ConfigDir()

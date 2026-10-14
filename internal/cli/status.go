@@ -9,6 +9,7 @@ import (
 	"github.com/productos-technology/productos-agent/internal/api"
 	"github.com/productos-technology/productos-agent/internal/daemon"
 	"github.com/productos-technology/productos-agent/internal/tools"
+	"github.com/productos-technology/productos-agent/internal/update"
 	"github.com/productos-technology/productos-agent/internal/version"
 )
 
@@ -24,7 +25,9 @@ func statusCmd() *cobra.Command {
 			defer s.close()
 			w := cmd.OutOrStdout()
 			out(w, "Server:   %s", s.cfg.Server)
-			out(w, "Version:  %s", version.String())
+			invoked, exe, _ := update.Executable()
+			method := update.DetectMethod(invoked, exe)
+			out(w, "Version:  %s (%s install, %s)", version.String(), method, exe)
 			tokens, err := s.tokens.Current()
 			if err != nil {
 				out(w, "Login:    not signed in (run `productos-agent login`)")
@@ -67,6 +70,12 @@ func statusCmd() *cobra.Command {
 				return nil
 			}
 			out(w, "Device:   %s (%s, %s/%s)", device.Name, device.ID, device.Platform, device.Arch)
+			if _, detail := updateLine(version.String(), device.LatestVersion, method); detail != "" {
+				out(w, "Update:   %s", detail)
+			}
+			if device.Outdated {
+				out(w, "          this version is below the server's minimum: runs cannot start until you update")
+			}
 			if len(device.Repositories) == 0 {
 				out(w, "Links:    none (run `productos-agent link` inside a checkout)")
 				return nil

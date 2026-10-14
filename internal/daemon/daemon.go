@@ -1,6 +1,7 @@
 // Package daemon is `productos-agent run`: it keeps the device registered and online, holds the AgentChannel
-// socket (reconnecting with backoff), heartbeats every 30 s, and hands run.start / run.cancel / run.answer to
-// runners. Events and statuses go over the socket when it is up and over REST otherwise.
+// socket (reconnecting with backoff), heartbeats every 30 s, hands run.start / run.cancel / run.answer to runners,
+// and updates the agent itself when the server says a newer release exists (update.go). Events and statuses go over
+// the socket when it is up and over REST otherwise.
 package daemon
 
 import (
@@ -10,10 +11,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/productos-technology/productos-agent/internal/api"
@@ -23,6 +26,7 @@ import (
 	"github.com/productos-technology/productos-agent/internal/protocol"
 	"github.com/productos-technology/productos-agent/internal/runner"
 	"github.com/productos-technology/productos-agent/internal/tools"
+	"github.com/productos-technology/productos-agent/internal/update"
 	"github.com/productos-technology/productos-agent/internal/version"
 )
 
@@ -48,6 +52,13 @@ type Daemon struct {
 	ToolPath string
 	// Detect overrides tool detection (tests).
 	Detect func(context.Context) protocol.Tools
+	// Version is this agent's version (version.String() unless a test says otherwise).
+	Version string
+	// Exe is the binary an update replaces (the running one, resolved, unless a test says otherwise); Reexec and HTTP
+	// override how the new one starts and how releases are downloaded (tests).
+	Exe    string
+	Reexec func(exe string) error
+	HTTP   *http.Client
 
 	tools   protocol.Tools
 	toolsMu sync.Mutex
@@ -57,6 +68,8 @@ type Daemon struct {
 
 	runsMu sync.Mutex
 	runs   map[string]*runner.Run
+	// pending holds the run.start of runs acknowledged but not yet past the update gate (what a handoff carries).
+	pending map[string]protocol.ServerMessage
 
 	acksMu sync.Mutex
 	acks   map[string]chan protocol.ServerMessage
@@ -64,6 +77,17 @@ type Daemon struct {
 	finished chan string
 	state    State
 	stateMu  sync.Mutex
+	// features and agent come from the server's hello (agent also from run.start); guarded by stateMu.
+	features []string
+	agent    *protocol.AgentVersions
+
+	exeInvoked    string
+	gateMu        sync.Mutex
+	updateMu      sync.Mutex
+	failedUpdates map[string]time.Time
+	staging       atomic.Bool
+	stagedCh      chan staged
+	lastRESTBeat  time.Time
 }
 
 // Run blocks until ctx ends (or, with Once, until the first run completes).
@@ -71,18 +95,30 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.Detect == nil {
 		d.Detect = tools.Detect
 	}
+	if d.Version == "" {
+		d.Version = version.String()
+	}
+	if d.Exe == "" {
+		d.exeInvoked, d.Exe, _ = update.Executable()
+	}
+	update.CleanOld(d.Exe)
 	d.runs = map[string]*runner.Run{}
+	d.pending = map[string]protocol.ServerMessage{}
 	d.acks = map[string]chan protocol.ServerMessage{}
+	d.failedUpdates = map[string]time.Time{}
+	d.stagedCh = make(chan staged, 1)
 	d.finished = make(chan string, 16)
 	d.tools = d.Detect(ctx)
-	d.state = State{PID: os.Getpid(), StartedAt: time.Now()}
+	d.state = State{PID: os.Getpid(), StartedAt: time.Now(), Version: d.Version, InstallMethod: string(d.installMethod())}
 	d.publish()
 	defer clearState()
 
 	if err := d.ensureDevice(ctx); err != nil {
 		return err
 	}
-	d.Log.Info("agent ready", "device_id", d.Config.DeviceID, "server", d.Config.Server, "tools", toolSummary(d.tools))
+	d.lastRESTBeat = time.Now() // ensureDevice was a REST heartbeat
+	d.Log.Info("agent ready", "device_id", d.Config.DeviceID, "server", d.Config.Server, "version", d.Version, "tools", toolSummary(d.tools))
+	d.resumeHandoff(ctx)
 
 	backoff := time.Second
 	for {
@@ -132,7 +168,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 // ensureDevice registers the machine once, or re-registers when the stored id is gone.
 func (d *Daemon) ensureDevice(ctx context.Context) error {
 	if d.Config.DeviceID != "" {
-		_, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: d.tools, AgentVersion: version.String()})
+		_, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: d.tools, AgentVersion: d.Version})
 		if err == nil {
 			return nil
 		}
@@ -143,7 +179,7 @@ func (d *Daemon) ensureDevice(ctx context.Context) error {
 		d.Config.DeviceID = ""
 	}
 	device, err := d.API.RegisterDevice(ctx, api.RegisterDeviceInput{
-		Name: d.deviceName(), Platform: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.String(), Tools: d.tools,
+		Name: d.deviceName(), Platform: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: d.Version, Tools: d.tools,
 	})
 	if err != nil {
 		return fmt.Errorf("device registration failed: %w", err)
@@ -164,7 +200,7 @@ func (d *Daemon) deviceName() string {
 }
 
 func (d *Daemon) deviceGone(ctx context.Context) bool {
-	_, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{AgentVersion: version.String()})
+	_, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{AgentVersion: d.Version})
 	return api.IsCode(err, "not_found")
 }
 
@@ -174,9 +210,9 @@ func (d *Daemon) connect(ctx context.Context) (*cable.Conn, error) {
 		return nil, err
 	}
 	d.toolsMu.Lock()
-	ident := map[string]any{"channel": "AgentChannel", "device_id": d.Config.DeviceID, "tools": d.tools, "agent_version": version.String()}
+	ident := map[string]any{"channel": "AgentChannel", "device_id": d.Config.DeviceID, "tools": d.tools, "agent_version": d.Version}
 	d.toolsMu.Unlock()
-	conn, err := cable.Dial(ctx, cable.Options{Server: d.Config.Server, Token: token, Identifier: ident, UserAgent: "productos-agent/" + version.String()})
+	conn, err := cable.Dial(ctx, cable.Options{Server: d.Config.Server, Token: token, Identifier: ident, UserAgent: "productos-agent/" + d.Version})
 	if err != nil && strings.Contains(err.Error(), "401") {
 		// A 401 on the handshake means the token died: refresh once and let the loop retry.
 		_ = d.Tokens.Invalidate(ctx, token)
@@ -223,6 +259,7 @@ func (d *Daemon) serve(ctx context.Context, conn *cable.Conn) bool {
 		case id := <-d.finished:
 			d.runsMu.Lock()
 			delete(d.runs, id)
+			delete(d.pending, id)
 			n := len(d.runs)
 			d.runsMu.Unlock()
 			d.publish()
@@ -231,23 +268,37 @@ func (d *Daemon) serve(ctx context.Context, conn *cable.Conn) bool {
 				_ = conn.Close()
 				return true
 			}
+			if n == 0 {
+				d.maybeUpdateIdle(ctx)
+			}
+		case s := <-d.stagedCh:
+			d.installStaged(s)
 		}
 	}
 }
 
+// heartbeat goes over the socket, and over REST when the socket fails or once an hour: the REST answer is the device
+// view, whose latest_version may announce a release this process has not heard of.
 func (d *Daemon) heartbeat(ctx context.Context, conn *cable.Conn) {
 	d.toolsMu.Lock()
 	t := d.tools
 	d.toolsMu.Unlock()
-	err := conn.Perform(ctx, "heartbeat", map[string]any{"tools": t, "agent_version": version.String()})
-	if err != nil {
-		d.Log.Debug("heartbeat over the socket failed; using REST", "error", err)
-		if _, rerr := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: t, AgentVersion: version.String()}); rerr != nil {
-			d.Log.Warn("heartbeat failed", "error", rerr)
+	if time.Since(d.lastRESTBeat) < versionCheckEvery {
+		err := conn.Perform(ctx, "heartbeat", map[string]any{"tools": t, "agent_version": d.Version})
+		if err == nil {
+			d.touchHeartbeat()
 			return
 		}
+		d.Log.Debug("heartbeat over the socket failed; using REST", "error", err)
 	}
+	device, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: t, AgentVersion: d.Version})
+	if err != nil {
+		d.Log.Warn("heartbeat failed", "error", err)
+		return
+	}
+	d.lastRESTBeat = time.Now()
 	d.touchHeartbeat()
+	d.learnLatest(ctx, device.LatestVersion)
 }
 
 func (d *Daemon) dispatch(ctx context.Context, raw json.RawMessage) {
@@ -258,9 +309,15 @@ func (d *Daemon) dispatch(ctx context.Context, raw json.RawMessage) {
 	}
 	switch msg.Type {
 	case "hello":
-		d.Log.Debug("hello", "protocol_version", msg.ProtocolVersion)
+		d.Log.Debug("hello", "protocol_version", msg.ProtocolVersion, "features", msg.Features)
+		d.stateMu.Lock()
+		d.features = msg.Features
+		d.stateMu.Unlock()
+		d.setAgent(msg.Agent)
+		d.maybeUpdateIdle(ctx)
 	case "run.start":
-		d.startRun(ctx, msg.AsRunStart())
+		d.setAgent(msg.Agent)
+		d.startRun(ctx, msg, false)
 	case "run.cancel":
 		if run := d.run(msg.RunID); run != nil {
 			d.Log.Info("run cancelled by the server", "run_id", msg.RunID, "reason", msg.Reason)
@@ -287,13 +344,29 @@ func (d *Daemon) dispatch(ctx context.Context, raw json.RawMessage) {
 	}
 }
 
+// supports reports whether the server's hello announced an additive feature.
+func (d *Daemon) supports(feature string) bool {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	for _, f := range d.features {
+		if f == feature {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Daemon) run(id string) *runner.Run {
 	d.runsMu.Lock()
 	defer d.runsMu.Unlock()
 	return d.runs[id]
 }
 
-func (d *Daemon) startRun(ctx context.Context, start protocol.RunStart) {
+// startRun hands a run.start to a runner. resumed: the previous process acknowledged it (handoff); notes go to its
+// report.
+func (d *Daemon) startRun(ctx context.Context, msg protocol.ServerMessage, resumed bool, notes ...protocol.Note) {
+	start := msg.AsRunStart()
+	start.Resumed = resumed
 	d.runsMu.Lock()
 	if _, exists := d.runs[start.RunID]; exists {
 		d.runsMu.Unlock()
@@ -301,13 +374,22 @@ func (d *Daemon) startRun(ctx context.Context, start protocol.RunStart) {
 	}
 	run := runner.New(start, d, d.Config, d.Log)
 	run.ToolPath = d.ToolPath
+	run.Notes = notes
+	run.BeforePrepare = d.beforePrepare
+	d.toolsMu.Lock()
+	run.ToolVersion = d.tools[start.Tool].Version
+	d.toolsMu.Unlock()
+	run.Supports = d.supports
 	d.runs[start.RunID] = run
+	if !resumed {
+		d.pending[start.RunID] = msg
+	}
 	d.runsMu.Unlock()
 	d.publish()
-	d.Log.Info("run started", "run_id", start.RunID, "tool", start.Tool, "subject", start.Subject.Key, "repository", start.Repository.FullName)
+	d.Log.Info("run started", "run_id", start.RunID, "tool", start.Tool, "subject", start.Subject.Key, "repository", start.Repository.FullName, "resumed", resumed)
 	go func() {
 		final := run.Execute(ctx)
-		d.Log.Info("run ended", "run_id", start.RunID, "status", final.Status, "reason", final.Reason)
+		d.Log.Info("run ended", "run_id", start.RunID, "status", final.Status, "outcome", final.Outcome, "reason_code", final.ReasonCode, "reason", final.Reason)
 		d.finished <- start.RunID
 	}()
 }
@@ -326,7 +408,7 @@ func (d *Daemon) resumeRuns(ctx context.Context) {
 			continue
 		}
 		d.Log.Warn("run was active before the agent restarted; failing it", "run_id", r.ID)
-		_, _ = d.API.PostStatus(ctx, r.ID, protocol.StatusReport{Status: protocol.StatusFailed, Reason: "the agent restarted while this run was in progress"})
+		_, _ = d.API.PostStatus(ctx, r.ID, protocol.StatusReport{Status: protocol.StatusFailed, ReasonCode: runner.AgentRestarted, Reason: "the agent restarted while this run was in progress"})
 	}
 }
 
@@ -355,22 +437,17 @@ func (d *Daemon) Events(ctx context.Context, runID string, events []protocol.Eve
 }
 
 func (d *Daemon) Status(ctx context.Context, runID string, report protocol.StatusReport) error {
-	data := map[string]any{"run_id": runID, "status": report.Status}
-	if report.Reason != "" {
-		data["reason"] = report.Reason
+	// The channel's data is the REST body plus run_id; empty fields stay out (a server without the additive fields
+	// ignores the rest).
+	raw, err := json.Marshal(report)
+	if err != nil {
+		return err
 	}
-	if report.Branch != "" {
-		data["branch"] = report.Branch
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return err
 	}
-	if report.HeadCommit != "" {
-		data["head_commit"] = report.HeadCommit
-	}
-	if report.PRURL != "" {
-		data["pr_url"] = report.PRURL
-	}
-	if report.Summary != "" {
-		data["summary"] = report.Summary
-	}
+	data["run_id"] = runID
 	if conn := d.getConn(); conn != nil {
 		ack, err := d.performAndWait(ctx, conn, runID, "run_status", data)
 		if err == nil {
@@ -381,7 +458,7 @@ func (d *Daemon) Status(ctx context.Context, runID string, report protocol.Statu
 		}
 		d.Log.Debug("run_status over the socket failed; using REST", "error", err)
 	}
-	_, err := d.API.PostStatus(ctx, runID, report)
+	_, err = d.API.PostStatus(ctx, runID, report)
 	return mapAPIError(err)
 }
 
@@ -487,6 +564,10 @@ func (d *Daemon) publish() {
 	d.stateMu.Lock()
 	s := d.state
 	s.ActiveRuns = ids
+	if d.agent != nil {
+		a := *d.agent
+		s.Agent = &a
+	}
 	d.stateMu.Unlock()
 	writeState(s)
 }
