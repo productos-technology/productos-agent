@@ -62,6 +62,28 @@ func run(cmd string, args ...string) error {
 	return nil
 }
 
+// inheritedVars are the variables the service carries over from the shell that installs it, besides PATH: where
+// Claude Code and Codex keep their sign-in (CLAUDE_CONFIG_DIR, CODEX_HOME), the XDG base directories and the agent's
+// own directories. A service starts with none of the shell's environment, so without these a run would use the
+// tool's default config directory, and a person signed in elsewhere (CLAUDE_CONFIG_DIR=~/.claude-work) would see
+// "OAuth session expired" from a stale default. Never a secret: the unit file is world-readable.
+var inheritedVars = []string{
+	"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+	"PRODUCTOS_AGENT_CONFIG_DIR", "PRODUCTOS_AGENT_STATE_DIR", "PRODUCTOS_AGENT_NO_KEYRING",
+}
+
+// environment returns PATH and the inherited variables that are set, in order, as name=value pairs.
+func environment() [][2]string {
+	vars := [][2]string{{"PATH", os.Getenv("PATH")}}
+	for _, k := range inheritedVars {
+		if v, ok := os.LookupEnv(k); ok && v != "" {
+			vars = append(vars, [2]string{k, v})
+		}
+	}
+	return vars
+}
+
 func home() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -87,6 +109,11 @@ func (s systemd) Describe() string {
 }
 
 func (s systemd) Install(binary string) (string, error) {
+	var env strings.Builder
+	for _, kv := range environment() {
+		// systemd quoting: double quotes, with backslashes and double quotes escaped.
+		fmt.Fprintf(&env, "Environment=%s=\"%s\"\n", kv[0], strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(kv[1]))
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=ProductOS Agent
 After=network-online.target
@@ -96,11 +123,10 @@ Wants=network-online.target
 ExecStart=%s run
 Restart=always
 RestartSec=10
-Environment=PATH=%s
-
+%s
 [Install]
 WantedBy=default.target
-`, binary, os.Getenv("PATH"))
+`, binary, env.String())
 	path := s.unitPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
@@ -149,12 +175,12 @@ func (l launchd) Install(binary string) (string, error) {
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>%s</string></dict>
+  <dict>%s</dict>
   <key>StandardOutPath</key><string>%s/launchd.out.log</string>
   <key>StandardErrorPath</key><string>%s/launchd.err.log</string>
 </dict>
 </plist>
-`, label, binary, os.Getenv("PATH"), logDir, logDir)
+`, label, binary, plistEnvironment(), logDir, logDir)
 	path := l.plistPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
@@ -164,6 +190,20 @@ func (l launchd) Install(binary string) (string, error) {
 		return "", err
 	}
 	return path, l.Start()
+}
+
+// plistEnvironment renders the inherited environment as plist dict entries, XML-escaped.
+func plistEnvironment() string {
+	var b strings.Builder
+	for _, kv := range environment() {
+		fmt.Fprintf(&b, "\n    <key>%s</key><string>%s</string>", kv[0], xmlEscape(kv[1]))
+	}
+	b.WriteString("\n  ")
+	return b.String()
+}
+
+func xmlEscape(v string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace(v)
 }
 
 func (l launchd) domain() string { return fmt.Sprintf("gui/%d", os.Getuid()) }

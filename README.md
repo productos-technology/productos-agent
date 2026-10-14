@@ -42,7 +42,7 @@ Then open a pain in ProductOS, **Deliver**, pick this machine and the tool, **Ru
 | `link [path] [--branch B]` | Validates the git checkout, reads `origin` and the default branch, registers it. An unknown remote lists what ProductOS expected. |
 | `unlink [path]` | Drops the link (a run in that checkout is cancelled). |
 | `run [--once]` | The daemon: register/refresh the device, connect the channel, heartbeat every 30 s, execute runs. `--once` exits after the first run. |
-| `service install\|uninstall\|start\|stop` | systemd user unit (Linux), launchd agent (macOS), Task Scheduler logon task (Windows). |
+| `service install\|uninstall\|start\|stop` | systemd user unit (Linux), launchd agent (macOS), Task Scheduler logon task (Windows). The service starts with none of your shell's environment, so `install` copies PATH and where the tools keep their sign-in (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, the XDG directories) from the shell that runs it; run it again after changing them. |
 | `doctor` | Checks `claude`, `codex`, `git`, `gh`, the keychain, the login, the device and the server. |
 | `version` | Version, commit and date. |
 
