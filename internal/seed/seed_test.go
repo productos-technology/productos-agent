@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -279,6 +280,9 @@ func fakeGH(t *testing.T, fail bool) (bin, argsFile string) {
 }
 
 func TestGHCreatesTheRemote(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake gh is a shell script")
+	}
 	needGit(t)
 	bin, argsFile := fakeGH(t, false)
 	dir := filepath.Join(t.TempDir(), "acme")
@@ -303,6 +307,9 @@ func TestGHCreatesTheRemote(t *testing.T) {
 }
 
 func TestGHFailureStillPlants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake gh is a shell script")
+	}
 	needGit(t)
 	bin, _ := fakeGH(t, true)
 	s := newSeed("prompt", filepath.Join(t.TempDir(), "acme"))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -18,6 +19,9 @@ func fakeGHBin(t *testing.T, authExit string) {
 }
 
 func TestGHIsAvailableOnlyWhenSignedIn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake gh is a shell script")
+	}
 	fakeGHBin(t, "0")
 	if got := Detect(context.Background())[GH]; !got.Available || got.Version != "2.60.1" {
 		t.Errorf("signed in: %+v", got)
