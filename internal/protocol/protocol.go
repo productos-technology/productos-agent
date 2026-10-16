@@ -245,6 +245,8 @@ type ServerMessage struct {
 	ProtocolVersion int    `json:"protocol_version,omitempty"`
 	DeviceID        string `json:"device_id,omitempty"`
 	RunID           string `json:"run_id,omitempty"`
+	// seed.plant
+	SeedID string `json:"seed_id,omitempty"`
 	// ack
 	Status  string `json:"status,omitempty"`
 	LastSeq *int   `json:"last_seq,omitempty"`
@@ -351,4 +353,73 @@ func (m ServerMessage) AsRunStart() RunStart {
 		start.Options = *m.Options
 	}
 	return start
+}
+
+// ---- Seeding a repository (seed.plant, additive to protocol 1) ----
+
+// Seed statuses the agent reports; the server owns the rest of the machine.
+const (
+	SeedPending  = "pending"
+	SeedPlanting = "planting"
+	SeedPlanted  = "planted"
+	SeedFailed   = "failed"
+)
+
+// Seed failure codes (reason_code of a failed seed).
+const (
+	SeedPathExists     = "path_exists"
+	SeedGitMissing     = "git_missing"
+	SeedInitFailed     = "init_failed"
+	SeedArchiveInvalid = "archive_invalid"
+	SeedCommitFailed   = "commit_failed"
+	SeedInternal       = "internal"
+)
+
+// NoteRemoteFailed is the seed note for a GitHub repository that could not be created or pushed; the seed is
+// planted all the same.
+const NoteRemoteFailed = "remote_failed"
+
+// Seed is AgentSeedView. For kind "zip" the files hold only the README to add when the archive has none at its root.
+type Seed struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Text      string `json:"text"`
+	Archive   bool   `json:"archive"`
+	Workspace struct {
+		ID   string `json:"id"`
+		Slug string `json:"slug"`
+		Name string `json:"name"`
+		Key  string `json:"key"`
+		URL  string `json:"url"`
+	} `json:"workspace"`
+	Product struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"product"`
+	LocalPath          string     `json:"local_path"`
+	RepositoryFullName string     `json:"repository_full_name"`
+	Private            bool       `json:"private"`
+	Files              []SeedFile `json:"files"`
+	Commit             struct {
+		Message string `json:"message"`
+		Trailer string `json:"trailer"`
+	} `json:"commit"`
+	Status string `json:"status"`
+}
+
+type SeedFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// SeedStatusReport is the body of POST /agent/seeds/{id}/status.
+type SeedStatusReport struct {
+	Status        string `json:"status"`
+	LocalPath     string `json:"local_path,omitempty"`
+	HeadCommit    string `json:"head_commit,omitempty"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+	RemoteURL     string `json:"remote_url,omitempty"`
+	ReasonCode    string `json:"reason_code,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Notes         []Note `json:"notes,omitempty"`
 }

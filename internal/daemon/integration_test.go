@@ -102,6 +102,9 @@ type fakeServer struct {
 	// hello's additive fields: nil features is a server from before outcomes (legacy)
 	features []string
 	agent    *protocol.AgentVersions
+	// seed is announced with seed.plant after hello; the agent's reports land in seedReports.
+	seed        *protocol.Seed
+	seedReports chan protocol.SeedStatusReport
 }
 
 type fakeRun struct {
@@ -118,6 +121,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 	mux.HandleFunc("/api/v1/agent/devices/", f.auth(f.deviceRoutes))
 	mux.HandleFunc("/api/v1/agent/runs", f.auth(f.listRuns))
 	mux.HandleFunc("/api/v1/agent/runs/", f.auth(f.runRoutes))
+	mux.HandleFunc("/api/v1/agent/seeds/", f.auth(f.seedRoutes))
 	mux.HandleFunc("/cable", f.cable)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
@@ -256,6 +260,28 @@ func (f *fakeServer) runRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (f *fakeServer) seedRoutes(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/agent/seeds/"), "/")
+	f.mu.Lock()
+	seed := f.seed
+	f.mu.Unlock()
+	if seed == nil || parts[0] != seed.ID {
+		writeErr(w, 404, "not_found", "")
+		return
+	}
+	switch {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		writeJSON(w, 200, seed)
+	case len(parts) == 2 && parts[1] == "status" && r.Method == http.MethodPost:
+		var in protocol.SeedStatusReport
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		f.seedReports <- in
+		writeJSON(w, 200, map[string]any{"id": seed.ID, "status": in.Status})
+	default:
+		writeErr(w, 404, "not_found", "")
+	}
+}
+
 func (f *fakeServer) applyStatus(run *fakeRun, in protocol.StatusReport) {
 	if run.status == "succeeded" || run.status == "failed" || run.status == "cancelled" {
 		return
@@ -328,6 +354,11 @@ func (f *fakeServer) cable(w http.ResponseWriter, r *http.Request) {
 				hello["agent"] = f.agent
 			}
 			send(map[string]any{"identifier": identifier, "message": hello})
+			f.mu.Lock()
+			if f.seed != nil {
+				send(map[string]any{"identifier": identifier, "message": map[string]any{"type": "seed.plant", "protocol_version": 1, "seed_id": f.seed.ID}})
+			}
+			f.mu.Unlock()
 			// The person pressed Run.
 			f.mu.Lock()
 			start := f.start

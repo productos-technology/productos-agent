@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/productos-technology/productos-agent/internal/oauth"
 	"github.com/productos-technology/productos-agent/internal/protocol"
 	"github.com/productos-technology/productos-agent/internal/runner"
+	"github.com/productos-technology/productos-agent/internal/seed"
 	"github.com/productos-technology/productos-agent/internal/tools"
 	"github.com/productos-technology/productos-agent/internal/update"
 	"github.com/productos-technology/productos-agent/internal/version"
@@ -59,6 +61,9 @@ type Daemon struct {
 	Exe    string
 	Reexec func(exe string) error
 	HTTP   *http.Client
+	// ReleaseKeys verify a release's checksums.txt.sig; nil means the keys compiled into the agent (tests sign with
+	// their own key).
+	ReleaseKeys []ed25519.PublicKey
 
 	tools   protocol.Tools
 	toolsMu sync.Mutex
@@ -70,6 +75,10 @@ type Daemon struct {
 	runs   map[string]*runner.Run
 	// pending holds the run.start of runs acknowledged but not yet past the update gate (what a handoff carries).
 	pending map[string]protocol.ServerMessage
+
+	// seeds are the seed.plant messages being worked on, by seed id; a seed never blocks a run.
+	seedsMu sync.Mutex
+	seeds   map[string]bool
 
 	acksMu sync.Mutex
 	acks   map[string]chan protocol.ServerMessage
@@ -104,6 +113,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	update.CleanOld(d.Exe)
 	d.runs = map[string]*runner.Run{}
 	d.pending = map[string]protocol.ServerMessage{}
+	d.seeds = map[string]bool{}
 	d.acks = map[string]chan protocol.ServerMessage{}
 	d.failedUpdates = map[string]time.Time{}
 	d.stagedCh = make(chan staged, 1)
@@ -318,6 +328,8 @@ func (d *Daemon) dispatch(ctx context.Context, raw json.RawMessage) {
 	case "run.start":
 		d.setAgent(msg.Agent)
 		d.startRun(ctx, msg, false)
+	case "seed.plant":
+		d.startSeed(ctx, msg.SeedID)
 	case "run.cancel":
 		if run := d.run(msg.RunID); run != nil {
 			d.Log.Info("run cancelled by the server", "run_id", msg.RunID, "reason", msg.Reason)
@@ -392,6 +404,61 @@ func (d *Daemon) startRun(ctx context.Context, msg protocol.ServerMessage, resum
 		d.Log.Info("run ended", "run_id", start.RunID, "status", final.Status, "outcome", final.Outcome, "reason_code", final.ReasonCode, "reason", final.Reason)
 		d.finished <- start.RunID
 	}()
+}
+
+// startSeed plants a seed in its own goroutine: the message is only the signal, the seed itself is fetched over REST.
+// A seed already being planted is ignored. The goroutine ends with the context, like a run.
+func (d *Daemon) startSeed(ctx context.Context, seedID string) {
+	if seedID == "" {
+		d.Log.Warn("seed.plant without a seed id")
+		return
+	}
+	d.seedsMu.Lock()
+	if d.seeds[seedID] {
+		d.seedsMu.Unlock()
+		return
+	}
+	d.seeds[seedID] = true
+	d.seedsMu.Unlock()
+	go func() {
+		defer func() {
+			d.seedsMu.Lock()
+			delete(d.seeds, seedID)
+			d.seedsMu.Unlock()
+		}()
+		d.plantSeed(ctx, seedID)
+	}()
+}
+
+func (d *Daemon) plantSeed(ctx context.Context, seedID string) {
+	s, err := d.API.Seed(ctx, seedID)
+	if err != nil {
+		d.Log.Warn("cannot fetch the seed", "seed_id", seedID, "error", err)
+		return
+	}
+	if s.Status != protocol.SeedPending && s.Status != protocol.SeedPlanting {
+		d.Log.Debug("seed is not waiting for a planter", "seed_id", seedID, "status", s.Status)
+		return
+	}
+	d.Log.Info("seed started", "seed_id", seedID, "kind", s.Kind, "path", s.LocalPath, "repository", s.RepositoryFullName)
+	d.toolsMu.Lock()
+	gh := d.tools[tools.GH]
+	d.toolsMu.Unlock()
+	deps := seed.Deps{
+		Report: func(ctx context.Context, r protocol.SeedStatusReport) error {
+			return d.API.PostSeedStatus(ctx, seedID, r)
+		},
+		Archive: func(ctx context.Context) ([]byte, error) { return d.API.SeedArchive(ctx, seedID) },
+		Log:     d.Log,
+	}
+	if gh.Available {
+		deps.GH = gh.Path
+	}
+	final := seed.Plant(ctx, deps, s)
+	if err := d.API.PostSeedStatus(ctx, seedID, final); err != nil {
+		d.Log.Warn("cannot report the seed's result", "seed_id", seedID, "status", final.Status, "error", err)
+	}
+	d.Log.Info("seed ended", "seed_id", seedID, "status", final.Status, "reason_code", final.ReasonCode, "reason", final.Reason, "head_commit", final.HeadCommit, "remote_url", final.RemoteURL)
 }
 
 // resumeRuns: after a (re)connect, runs the server still considers acknowledged but this process does not know were

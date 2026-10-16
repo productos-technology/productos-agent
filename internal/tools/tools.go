@@ -1,5 +1,6 @@
 // Package tools detects the coding tools the agent can drive: `claude` (Claude Code) and `codex` (OpenAI Codex), on
-// PATH or in the usual install directories, with their versions.
+// PATH or in the usual install directories, with their versions, plus `gh` (the GitHub CLI), which counts only while
+// it is signed in.
 package tools
 
 import (
@@ -18,9 +19,10 @@ import (
 const (
 	Claude = "claude"
 	Codex  = "codex"
+	GH     = "gh"
 )
 
-var Known = []string{Claude, Codex}
+var Known = []string{Claude, Codex, GH}
 
 var versionRE = regexp.MustCompile(`\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?`)
 
@@ -66,7 +68,20 @@ func detectOne(ctx context.Context, name string) protocol.ToolInfo {
 			info.Version = m
 		}
 	}
+	if name == GH && !ghSignedIn(ctx, path) {
+		// Installed but signed out: seeding and pull requests cannot use it, and the server must not offer it.
+		info.Available = false
+	}
 	return info
+}
+
+// ghSignedIn is `gh auth status` exiting 0 (3 s).
+func ghSignedIn(ctx context.Context, path string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "auth", "status")
+	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1")
+	return cmd.Run() == nil
 }
 
 func candidateDirs() []string {

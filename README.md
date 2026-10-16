@@ -17,7 +17,7 @@ winget install ProductOS.Agent                                 # Windows
 ```
 
 Or download an archive from the [releases](https://github.com/productos-technology/productos-agent/releases) and put
-`productos-agent` on your PATH. Checksums are in `checksums.txt`.
+`productos-agent` on your PATH. Checksums are in `checksums.txt`, signed as `checksums.txt.sig` (Ed25519; the public key is compiled into the agent and pasted into `install.sh`, which verifies it with openssl).
 
 You also need `git`, one of [Claude Code](https://docs.anthropic.com/claude-code) (`claude`) or
 [Codex](https://github.com/openai/codex) (`codex`) signed in on this machine, and optionally the GitHub CLI (`gh`)
@@ -50,6 +50,16 @@ Then open a pain in ProductOS, **Deliver**, pick this machine and the tool, **Ru
 `--verbose` on any command also logs to stderr. The structured log is `agent.log` in the state directory
 (`~/.local/state/productos-agent` on Linux, `~/Library/Application Support/productos-agent` on macOS,
 `%LocalAppData%\productos-agent` on Windows). Tokens and change definitions are never logged.
+
+## Seeding a repository
+
+A product started from scratch in ProductOS can be planted on this machine (`seed.plant`). The agent creates the
+directory (it must not exist, or be empty), writes the seed's files or unpacks its zip safely (no absolute or `..`
+paths, no symlinks, at most 300 entries of 2 MB), runs `git init -b main`, makes one commit that ends with the
+`ProductOS:` trailer and reports the path and the commit. When the dialog asks for a GitHub repository, it also runs
+`gh repo create … --push`; that needs `gh` installed **and signed in** (`gh auth login`), which the agent announces as
+`tools.gh`. If GitHub refuses, the checkout stays and ProductOS says why. A seed never blocks a run and never deletes
+anything you had.
 
 ## What a run does
 
@@ -119,7 +129,8 @@ GitHub's API.
 
 - **Before a run**, once the run is acknowledged and before the checkout is touched, an agent that is behind updates
   itself when it installed itself (not Homebrew, not winget), `auto_update` is on and no other run is in progress: a
-  log line in the drawer, the archive and `checksums.txt` from the release, the SHA-256 checked, the new binary tried
+  log line in the drawer, `checksums.txt` and its Ed25519 signature from the release (verified with the key compiled into
+  the agent), the archive, the SHA-256 checked, the new binary tried
   (`version`), swapped in atomically, and the process re-executes itself (same PID on Linux and macOS, so systemd and
   launchd do not notice; on Windows a new process replaces it). The runs it had acknowledged are handed over in
   `handoff.json` (0600, state directory) and continue from the checkout step. A failed update is a warning and an
@@ -162,7 +173,7 @@ fallback), `internal/runner` (one run: checkout, tool, events, question/answer, 
 (stream parsers; fixtures in `testdata/`), `internal/cable` (Action Cable client), `internal/api` (REST),
 `internal/oauth` (discovery, registration, PKCE, loopback, refresh), `internal/update` (versions, install method,
 download, checksum, swap, re-exec), `internal/secrets`, `internal/config`, `internal/paths`, `internal/gitx`,
-`internal/tools`, `internal/service`, `internal/logx`, `internal/protocol`. The report schema both tools answer is
+`internal/seed` (planting a seed), `internal/tools`, `internal/service`, `internal/logx`, `internal/protocol`. The report schema both tools answer is
 `internal/runner/report_schema.json` (embedded).
 
 ## Release

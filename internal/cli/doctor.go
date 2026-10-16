@@ -38,6 +38,9 @@ func doctorCmd() *cobra.Command {
 			for _, name := range tools.Known {
 				info := detected[name]
 				detail := "not found on PATH"
+				if !info.Available && info.Path != "" && name == tools.GH {
+					detail = info.Path + " is installed but not signed in: run `gh auth login`"
+				}
 				if info.Available {
 					detail = info.Path
 					if info.Version != "" {
@@ -48,8 +51,6 @@ func doctorCmd() *cobra.Command {
 			}
 			gitPath, err := exec.LookPath("git")
 			ok("git", err == nil, firstOr(gitPath, "not found: git is required"))
-			ghPath, err := exec.LookPath("gh")
-			ok("gh", err == nil, firstOr(ghPath, "not found: pull requests will not be opened"))
 			if dir, err := paths.ConfigDir(); err == nil {
 				out(w, "       config:    %s", dir)
 			}

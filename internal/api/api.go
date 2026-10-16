@@ -147,9 +147,36 @@ func (c *Client) PostStatus(ctx context.Context, runID string, report protocol.S
 	return &out, c.do(ctx, http.MethodPost, "/api/v1/agent/runs/"+url.PathEscape(runID)+"/status", report, &out)
 }
 
+// --- seeds ---
+
+func (c *Client) Seed(ctx context.Context, seedID string) (*protocol.Seed, error) {
+	var out protocol.Seed
+	return &out, c.do(ctx, http.MethodGet, "/api/v1/agent/seeds/"+url.PathEscape(seedID), nil, &out)
+}
+
+// maxArchive bounds the zip download: 300 entries of at most 2 MB each, compressed, with room to spare.
+const maxArchive = 64 << 20
+
+// SeedArchive downloads the zip of a seed of kind "zip".
+func (c *Client) SeedArchive(ctx context.Context, seedID string) ([]byte, error) {
+	var raw []byte
+	err := c.doWith(ctx, http.MethodGet, "/api/v1/agent/seeds/"+url.PathEscape(seedID)+"/archive", nil, "application/zip", &raw)
+	return raw, err
+}
+
+// PostSeedStatus reports a seed's progress; the server answers 200 with the row even when it is finished already.
+func (c *Client) PostSeedStatus(ctx context.Context, seedID string, report protocol.SeedStatusReport) error {
+	return c.do(ctx, http.MethodPost, "/api/v1/agent/seeds/"+url.PathEscape(seedID)+"/status", report, nil)
+}
+
 // --- plumbing ---
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	return c.doWith(ctx, method, path, in, "application/json", out)
+}
+
+// doWith is do with an explicit Accept; an out of type *[]byte receives the body as it is instead of decoded JSON.
+func (c *Client) doWith(ctx context.Context, method, path string, in any, accept string, out any) error {
 	var body []byte
 	if in != nil {
 		var err error
@@ -161,7 +188,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if err != nil {
 		return err
 	}
-	status, err := c.once(ctx, method, path, body, token, out)
+	status, err := c.once(ctx, method, path, body, accept, token, out)
 	if status == http.StatusUnauthorized {
 		if rerr := c.Tokens.Invalidate(ctx, token); rerr != nil {
 			return rerr
@@ -170,12 +197,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		if err != nil {
 			return err
 		}
-		_, err = c.once(ctx, method, path, body, token, out)
+		_, err = c.once(ctx, method, path, body, accept, token, out)
 	}
 	return err
 }
 
-func (c *Client) once(ctx context.Context, method, path string, body []byte, token string, out any) (int, error) {
+func (c *Client) once(ctx context.Context, method, path string, body []byte, accept, token string, out any) (int, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -185,7 +212,7 @@ func (c *Client) once(ctx context.Context, method, path string, body []byte, tok
 		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "productos-agent/"+version.String())
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -195,7 +222,7 @@ func (c *Client) once(ctx context.Context, method, path string, body []byte, tok
 		return 0, err
 	}
 	defer res.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxArchive))
 	if err != nil {
 		return res.StatusCode, err
 	}
@@ -211,6 +238,10 @@ func (c *Client) once(ctx context.Context, method, path string, body []byte, tok
 			apiErr.Code = http.StatusText(res.StatusCode)
 		}
 		return res.StatusCode, apiErr
+	}
+	if raw, ok := out.(*[]byte); ok {
+		*raw = data
+		return res.StatusCode, nil
 	}
 	if out == nil || len(bytes.TrimSpace(data)) == 0 {
 		return res.StatusCode, nil
