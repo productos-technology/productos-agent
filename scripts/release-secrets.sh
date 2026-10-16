@@ -12,10 +12,11 @@
 #   scripts/release-secrets.sh app       # the App id and private key
 #   scripts/release-secrets.sh signing   # the signing key
 #
-# The release App, once, on GitHub (organisation settings, Developer settings, GitHub Apps, New GitHub App; the script
-# opens the page): name `productos-release`, any homepage, webhook off, repository permission Contents: Read and write,
-# nothing else, "Only on this account". Then install it on productos-technology for exactly `homebrew-tap` and
-# `winget-pkgs`, and generate a private key (a .pem download) on the App's page. `app` reads the App id and the .pem path.
+# The release App is the organisation's ProductOS GitHub App (`productos-technology`, the one ProductOS itself uses):
+# it is owned by the organisation, it has Contents: Read and write, and its installation on productos-technology covers
+# homebrew-tap and winget-pkgs (installed on all repositories, or add those two). `app` reads its App id (the App's page
+# under organisation settings, Developer settings, GitHub Apps; the script opens it) and the path to its private key
+# (.pem: the one in the Rails credentials, or a new one generated on the App page). No second App is needed.
 #
 # `signing` reads the private key from PRODUCTOS_SIGNING_KEY_FILE (default ~/.config/productos-agent-release/signing.key,
 # written by `go run ./cmd/productos-agent-sign keygen` with PRODUCTOS_SIGN_PRIVATE_OUT). Keep that file (or a copy in a

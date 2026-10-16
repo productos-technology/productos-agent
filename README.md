@@ -182,9 +182,9 @@ Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The `release` workflow
 `checksums.txt` and its signature, the GitHub release, the Homebrew formula in `productos-technology/homebrew-tap`, and
 the winget manifest on a branch `productos-agent-X.Y.Z` of the fork `productos-technology/winget-pkgs` (open the pull
 request on `microsoft/winget-pkgs` from that branch by hand: an App token cannot act on microsoft's repository). The
-tap and the fork are written with an installation token of the organisation's **release App** (a GitHub App owned by
-`productos-technology`, permission Contents: read and write, installed on the organisation for `homebrew-tap` and
-`winget-pkgs`), minted by `actions/create-github-app-token` for each run; secrets `RELEASE_APP_ID` and
+tap and the fork are written with an installation token of the organisation's ProductOS GitHub App (`productos-technology`:
+owned by the organisation, Contents: read and write, its installation covering `homebrew-tap` and `winget-pkgs`),
+minted by `actions/create-github-app-token` for each run; secrets `RELEASE_APP_ID` and
 `RELEASE_APP_PRIVATE_KEY` (`scripts/release-secrets.sh app`) plus `AGENT_SIGNING_KEY` (`scripts/release-secrets.sh signing`).
 No personal token is involved. `install.sh` here is the real installer the server
 serves at `/install.sh`.
