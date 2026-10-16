@@ -22,6 +22,18 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
+      # The tap and the winget fork belong to the organisation: the token that writes them is an installation token of
+      # the organisation's release App (RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY; scripts/release-secrets.sh app),
+      # minted here for this run and these two repositories only. No personal token is involved.
+      - name: Mint the release App's token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: productos-technology
+          repositories: homebrew-tap,winget-pkgs
+          permission-contents: write
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -29,8 +41,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          WINGET_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
       - name: Verify the release signature with the compiled-in key
         run: go run ./cmd/productos-agent-sign verify --sig dist/checksums.txt.sig dist/checksums.txt

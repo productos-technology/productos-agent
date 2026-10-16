@@ -104,8 +104,10 @@ brews:
       Keep it running in the background:
         productos-agent service install
 
-# winget: goreleaser opens a PR on microsoft/winget-pkgs (needs WINGET_GITHUB_TOKEN, a token on a fork).
-# packaging/winget/ holds the manifest template for a manual first submission.
+# winget: goreleaser commits the manifest to a branch of the organisation's fork productos-technology/winget-pkgs
+# (WINGET_GITHUB_TOKEN: the release App's installation token, which reaches the fork and nothing of microsoft's), and
+# a person opens the pull request on microsoft/winget-pkgs from that branch (README, Release). packaging/winget/ holds
+# the manifest template for a manual first submission.
 winget:
   - name: productos-agent
     publisher: ProductOS
@@ -126,8 +128,4 @@ winget:
       branch: "productos-agent-{{ .Version }}"
       token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
       pull_request:
-        enabled: true
-        base:
-          owner: microsoft
-          name: winget-pkgs
-          branch: master
+        enabled: false
