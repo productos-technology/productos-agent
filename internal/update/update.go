@@ -1,7 +1,8 @@
 // Package update replaces the running agent with a release (docs/reference/agent-protocol.md, Agent versions and
 // self-update): it compares versions, tells how the binary was installed (only its own installs update themselves;
-// Homebrew and winget own theirs), downloads the archive and checksums.txt over HTTPS, verifies the SHA-256 (what
-// install.sh does), extracts the binary, smoke-tests it, swaps it in atomically and re-executes. Standard library only.
+// Homebrew and winget own theirs), downloads checksums.txt, its Ed25519 signature and the archive over HTTPS, verifies
+// the signature against the keys compiled into sign.go and the SHA-256 (what install.sh does), extracts the binary,
+// smoke-tests it, swaps it in atomically and re-executes. Standard library only.
 package update
 
 import (
@@ -11,6 +12,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -43,6 +45,7 @@ const (
 
 	maxArchive   = 200 << 20
 	maxChecksums = 1 << 20
+	maxSignature = 4 << 10
 )
 
 // --- versions ---
@@ -220,6 +223,8 @@ type Updater struct {
 	HTTP         *http.Client
 	// Smoke checks the staged binary; the default runs `<staged> version` and looks for the version.
 	Smoke func(ctx context.Context, path, version string) error
+	// Keys verify checksums.txt.sig; nil means the keys compiled into sign.go (tests set their own).
+	Keys []ed25519.PublicKey
 }
 
 // New is an Updater for this process.
@@ -227,12 +232,17 @@ func New(base, exe string) *Updater {
 	return &Updater{Base: base, Exe: exe, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}
 }
 
-// Stage downloads version's archive and checksums.txt, verifies the SHA-256, extracts the binary into a new file in
-// the binary's own directory (so the swap is a rename on one filesystem) and smoke-tests it. It returns the staged
-// path; Replace swaps it in.
+// Stage downloads version's checksums.txt and its signature, verifies the signature with the release keys, downloads
+// the archive, verifies its SHA-256, extracts the binary into a new file in the binary's own directory (so the swap is
+// a rename on one filesystem) and smoke-tests it. It returns the staged path; Replace swaps it in. The download base
+// only has to be HTTPS: whoever serves the files, only an archive the release key signed for is installed.
 func (u *Updater) Stage(ctx context.Context, version string) (string, error) {
 	if !Valid(version) {
 		return "", fmt.Errorf("%q is not a version", version)
+	}
+	keys, err := u.keys()
+	if err != nil {
+		return "", err
 	}
 	num := Number(version)
 	base := strings.TrimRight(firstNonEmpty(u.Base, DefaultBase), "/")
@@ -243,6 +253,13 @@ func (u *Updater) Stage(ctx context.Context, version string) (string, error) {
 	dir := base + "/v" + num
 	sums, err := u.get(ctx, dir+"/checksums.txt", maxChecksums)
 	if err != nil {
+		return "", err
+	}
+	sig, err := u.get(ctx, dir+"/"+SignatureName, maxSignature)
+	if err != nil {
+		return "", fmt.Errorf("the release is not signed: %w", err)
+	}
+	if err := VerifySignature(sums, sig, keys); err != nil {
 		return "", err
 	}
 	want, err := checksumFor(sums, archive)
@@ -277,6 +294,13 @@ func (u *Updater) Stage(ctx context.Context, version string) (string, error) {
 		return "", err
 	}
 	return staged, nil
+}
+
+func (u *Updater) keys() ([]ed25519.PublicKey, error) {
+	if u.Keys != nil {
+		return u.Keys, nil
+	}
+	return ParsePublicKeys(PublicKeys)
 }
 
 func (u *Updater) client() *http.Client {

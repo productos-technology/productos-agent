@@ -41,6 +41,16 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+# checksums.txt.sig: the Ed25519 signature of checksums.txt (cmd/productos-agent-sign, standard library). The private
+# key is the Actions secret AGENT_SIGNING_KEY (scripts/release-secrets.sh signing); the public keys are compiled into
+# internal/update/sign.go and pasted into install.sh, so the agent and the installer refuse an unsigned release.
+signs:
+  - id: checksums
+    artifacts: checksum
+    cmd: go
+    args: ["run", "./cmd/productos-agent-sign", "sign", "--key-env", "AGENT_SIGNING_KEY", "--out", "${signature}", "${artifact}"]
+    signature: "${artifact}.sig"
+
 changelog:
   use: github
   sort: asc

@@ -31,3 +31,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
+      - name: Verify the release signature with the compiled-in key
+        run: go run ./cmd/productos-agent-sign verify --sig dist/checksums.txt.sig dist/checksums.txt

@@ -2,15 +2,20 @@
 # ProductOS Agent installer: curl -fsSL https://productos.technology/install.sh | sh
 #
 # Detects the OS and architecture, downloads the matching archive of the latest GitHub release of
-# productos-technology/productos-agent (or the version in PRODUCTOS_AGENT_VERSION, e.g. v1.2.3), verifies its SHA-256 against
-# checksums.txt, and installs the `productos-agent` binary into PRODUCTOS_AGENT_INSTALL_DIR (default: /usr/local/bin
-# when writable, else ~/.local/bin). Linux and macOS; on Windows use `winget install ProductOS.Agent`.
+# productos-technology/productos-agent (or the version in PRODUCTOS_AGENT_VERSION, e.g. v1.2.3), verifies the release
+# signature of checksums.txt (Ed25519, with openssl) and the archive's SHA-256, and installs the `productos-agent` binary
+# into PRODUCTOS_AGENT_INSTALL_DIR (default: /usr/local/bin when writable, else ~/.local/bin). Linux and macOS; on
+# Windows use `winget install ProductOS.Agent`.
 set -eu
 
 REPO="productos-technology/productos-agent"
 BINARY="productos-agent"
 VERSION="${PRODUCTOS_AGENT_VERSION:-latest}"
 DOCS="https://productos.technology/docs/agent"
+# The release public key (the same one compiled into the agent, internal/update/sign.go), in the form openssl reads.
+PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAmIF2hDoEv7MM0NWPPo1ylMgjBTfg9HYg1BxhFOqmdJA=
+-----END PUBLIC KEY-----"
 
 say() { printf '%s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
@@ -58,6 +63,18 @@ base="https://github.com/$REPO/releases/download/$VERSION"
 say "Downloading $BINARY $VERSION for $os/$arch"
 curl -fsSL -o "$tmp/$archive" "$base/$archive" || die "download failed: $base/$archive"
 curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" || die "download failed: $base/checksums.txt"
+curl -fsSL -o "$tmp/checksums.txt.sig" "$base/checksums.txt.sig" || die "download failed: $base/checksums.txt.sig (this release is not signed)"
+
+# The signature binds checksums.txt to the release key; checksums.txt binds the archive. Without openssl the SHA-256 is
+# still checked, but nothing proves who published the release: say so.
+if command -v openssl >/dev/null 2>&1; then
+  printf '%s\n' "$PUBLIC_KEY_PEM" > "$tmp/release.pub"
+  openssl base64 -d -A -in "$tmp/checksums.txt.sig" -out "$tmp/checksums.txt.sig.bin" 2>/dev/null || die "malformed checksums.txt.sig"
+  openssl pkeyutl -verify -pubin -inkey "$tmp/release.pub" -rawin -in "$tmp/checksums.txt" -sigfile "$tmp/checksums.txt.sig.bin" >/dev/null 2>&1 \
+    || die "checksums.txt is not signed by the ProductOS release key"
+else
+  say "warning: openssl not found, the release signature was not checked"
+fi
 
 expected=$(grep " $archive\$" "$tmp/checksums.txt" | awk '{print $1}')
 [ -n "$expected" ] || die "no checksum for $archive"

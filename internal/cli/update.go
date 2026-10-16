@@ -24,8 +24,8 @@ func updateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update the agent to the latest release (or to --to vX.Y.Z)",
-		Long: `Downloads the release archive and checksums.txt from GitHub over HTTPS, checks the SHA-256, tries the new binary
-and swaps it in place, then restarts the background service if one is installed. The latest version comes from the
+		Long: `Downloads checksums.txt, its release signature and the archive over HTTPS, verifies the signature with the key
+compiled into this binary and the SHA-256, tries the new binary and swaps it in place, then restarts the background service if one is installed. The latest version comes from the
 running agent or the ProductOS server, else from GitHub's latest release. Homebrew and winget installs are updated
 by their package manager: the command prints what to run. The daemon updates itself (before a run, or when idle)
 unless "auto_update": false is in config.json or PRODUCTOS_AGENT_NO_UPDATE=1.`,

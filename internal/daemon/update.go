@@ -215,6 +215,7 @@ func (d *Daemon) install(path, target string, handoff bool) error {
 func (d *Daemon) updater(base string) *update.Updater {
 	u := update.New(base, d.Exe)
 	u.HTTP = d.HTTP
+	u.Keys = d.ReleaseKeys
 	return u
 }
 

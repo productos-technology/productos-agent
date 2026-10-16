@@ -3,6 +3,7 @@
 #
 #   HOMEBREW_TAP_GITHUB_TOKEN  writes the formula into productos-technology/homebrew-tap
 #   WINGET_GITHUB_TOKEN        pushes a branch to the productos-technology/winget-pkgs fork and opens the upstream PR
+#   AGENT_SIGNING_KEY          signs checksums.txt (Ed25519 seed, base64); the agent verifies with internal/update/sign.go
 #
 # GitHub has no API for minting a personal access token (anything that could mint one would already hold a
 # credential), so for each secret this script opens the token page pre-filled with the right name, repository
@@ -10,8 +11,13 @@
 # repository's public key before upload. The value is read with the terminal echo off and is never written to
 # disk or logged.
 #
-#   scripts/release-secrets.sh            # both secrets
-#   scripts/release-secrets.sh winget     # one of: homebrew | winget
+#   scripts/release-secrets.sh            # the two tokens
+#   scripts/release-secrets.sh winget     # one of: homebrew | winget | signing
+#
+# `signing` reads the private key from PRODUCTOS_SIGNING_KEY_FILE (default ~/.config/productos-agent-release/signing.key,
+# written by `go run ./cmd/productos-agent-sign keygen` with PRODUCTOS_SIGN_PRIVATE_OUT). Keep that file (or a copy in a
+# password manager): a release signed by a key the agents do not know is refused, and a lost key means adding a new
+# public key to sign.go in a release still signed by the old one.
 set -eu
 
 REPO="productos-technology/productos-agent"
@@ -53,12 +59,24 @@ store() { # store SECRET_NAME TARGET_REPO DESCRIPTION
   echo "   stored as an Actions secret on $REPO"
 }
 
+store_signing_key() {
+  file=${PRODUCTOS_SIGNING_KEY_FILE:-$HOME/.config/productos-agent-release/signing.key}
+  [ -s "$file" ] || { echo "no signing key at $file (run: PRODUCTOS_SIGN_PRIVATE_OUT=$file go run ./cmd/productos-agent-sign keygen)" >&2; exit 1; }
+  echo
+  echo "== AGENT_SIGNING_KEY (from $file)"
+  tr -d '\n' < "$file" | gh secret set AGENT_SIGNING_KEY --repo "$REPO" --app actions
+  echo "   stored as an Actions secret on $REPO"
+}
+
 which=${1:-both}
 case "$which" in
   homebrew|both) store HOMEBREW_TAP_GITHUB_TOKEN homebrew-tap "productos-agent release: writes the Homebrew formula" ;;
 esac
 case "$which" in
   winget|both) store WINGET_GITHUB_TOKEN winget-pkgs "productos-agent release: pushes the winget manifest branch" ;;
+esac
+case "$which" in
+  signing) store_signing_key ;;
 esac
 
 echo

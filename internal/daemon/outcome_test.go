@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,7 +22,11 @@ import (
 
 	"github.com/productos-technology/productos-agent/internal/paths"
 	"github.com/productos-technology/productos-agent/internal/protocol"
+	"github.com/productos-technology/productos-agent/internal/update"
 )
+
+// The release key of these tests: fakeRelease signs with it, daemons verify with it (like the compiled-in keys).
+var testReleasePublic, testReleasePrivate, _ = ed25519.GenerateKey(rand.Reader)
 
 var allFeatures = []string{"outcome", "report", "update"}
 
@@ -254,7 +260,7 @@ func TestUpdateBeforeTheRunNeverFailsIt(t *testing.T) {
 	f.start.Agent = agent
 	var handedOver []string
 	run := runDaemonWith(t, f, work, func(d *Daemon) {
-		d.Version, d.Exe, d.HTTP = "0.1.0", exe, release.Client()
+		d.Version, d.Exe, d.HTTP, d.ReleaseKeys = "0.1.0", exe, release.Client(), []ed25519.PublicKey{testReleasePublic}
 		d.Reexec = func(path string) error {
 			h, err := takeHandoff()
 			if err != nil || h == nil {
@@ -308,8 +314,10 @@ func fakeRelease(t *testing.T, version, binary string) *httptest.Server {
 	archive := fmt.Sprintf("productos-agent_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/download/v"+version+"/"+archive, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(data) })
-	mux.HandleFunc("/download/v"+version+"/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), archive)
+	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), archive)
+	mux.HandleFunc("/download/v"+version+"/checksums.txt", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(sums)) })
+	mux.HandleFunc("/download/v"+version+"/"+update.SignatureName, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(update.Sign([]byte(sums), testReleasePrivate))
 	})
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
