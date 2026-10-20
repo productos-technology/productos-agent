@@ -14,6 +14,12 @@ var ErrSignedOut = errors.New("not signed in: run `productos-agent login`")
 
 // TokenSource hands out a live access token, refreshing it (with rotation) when it is about to expire or when the
 // server refused it. Safe for concurrent use; one refresh at a time.
+//
+// The store is shared by every productos-agent process on this machine: the daemon and any CLI command run beside it
+// (`link`, `status`, `doctor`, `update`) each build their own TokenSource over the same keychain entry or file. A
+// refresh spends the refresh token (the server rotates it and, when the spent one is presented again, revokes the
+// whole family), so before spending what it holds in memory a TokenSource takes the store's lock and reads the store
+// again: a pair another process saved meanwhile is adopted instead.
 type TokenSource struct {
 	client   *Client
 	clientID string
@@ -82,26 +88,57 @@ func (s *TokenSource) loadLocked() error {
 	return nil
 }
 
+// refreshLocked makes the tokens in memory live again: by adopting a newer pair another process saved, else by
+// spending the refresh token. A refusal for good (invalid_grant and kin) signs the machine out, unless a newer pair
+// landed in the store while the server was answering; a transient failure keeps the tokens for a later try.
 func (s *TokenSource) refreshLocked(ctx context.Context) error {
-	if s.tokens.RefreshToken == "" {
-		s.dead = ErrSignedOut
-		return s.dead
-	}
-	fresh, err := s.client.Refresh(ctx, s.clientID, s.tokens.RefreshToken)
+	release, err := s.store.Lock(ctx)
 	if err != nil {
-		var te *TokenError
-		if errors.As(err, &te) && te.Permanent() {
+		return err
+	}
+	defer release()
+
+	adopted := s.adoptStoredLocked()
+	retried := false
+	for {
+		if adopted && !s.tokens.Expiring(refreshMargin) {
+			return nil // another process already refreshed; nothing to spend
+		}
+		if s.tokens.RefreshToken == "" {
 			s.dead = ErrSignedOut
-			_ = s.store.Delete()
 			return s.dead
 		}
-		return err // transient: network, 5xx; keep the old tokens
+		fresh, err := s.client.Refresh(ctx, s.clientID, s.tokens.RefreshToken)
+		if err == nil {
+			if fresh.Scope == "" {
+				fresh.Scope = s.tokens.Scope
+			}
+			s.tokens = fresh
+			return s.store.Save(fresh)
+		}
+		var te *TokenError
+		if !errors.As(err, &te) || !te.Permanent() {
+			return err // transient: network, 5xx; keep the old tokens
+		}
+		if !retried && s.adoptStoredLocked() {
+			retried, adopted = true, true
+			continue
+		}
+		s.dead = ErrSignedOut
+		_ = s.store.Delete()
+		return s.dead
 	}
-	if fresh.Scope == "" {
-		fresh.Scope = s.tokens.Scope
+}
+
+// adoptStoredLocked reads the store again and takes its pair when it differs from the one in memory (another process
+// rotated the refresh token since this one loaded it). Reports whether the tokens changed.
+func (s *TokenSource) adoptStoredLocked() bool {
+	t, err := s.store.Load()
+	if err != nil || t.RefreshToken == "" || t.RefreshToken == s.tokens.RefreshToken {
+		return false
 	}
-	s.tokens = fresh
-	return s.store.Save(fresh)
+	s.tokens = t
+	return true
 }
 
 // Current returns the tokens as last loaded (no refresh), for `status` and `logout`.
