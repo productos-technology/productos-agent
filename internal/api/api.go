@@ -70,6 +70,9 @@ type RegisterDeviceInput struct {
 	Arch         string         `json:"arch"`
 	AgentVersion string         `json:"agent_version"`
 	Tools        protocol.Tools `json:"tools,omitempty"`
+	// MaxParallelRuns: how many runs this device takes at once (additive; a server without it keeps one run per
+	// checkout).
+	MaxParallelRuns int `json:"max_parallel_runs,omitempty"`
 }
 
 func (c *Client) RegisterDevice(ctx context.Context, in RegisterDeviceInput) (*protocol.Device, error) {
@@ -78,9 +81,10 @@ func (c *Client) RegisterDevice(ctx context.Context, in RegisterDeviceInput) (*p
 }
 
 type HeartbeatInput struct {
-	Tools        protocol.Tools `json:"tools,omitempty"`
-	AgentVersion string         `json:"agent_version,omitempty"`
-	Name         string         `json:"name,omitempty"`
+	Tools           protocol.Tools `json:"tools,omitempty"`
+	AgentVersion    string         `json:"agent_version,omitempty"`
+	Name            string         `json:"name,omitempty"`
+	MaxParallelRuns int            `json:"max_parallel_runs,omitempty"`
 }
 
 func (c *Client) Heartbeat(ctx context.Context, deviceID string, in HeartbeatInput) (*protocol.Device, error) {

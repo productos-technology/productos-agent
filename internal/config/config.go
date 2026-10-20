@@ -30,9 +30,32 @@ type Config struct {
 	// AutoUpdate lets the daemon update itself to the server's latest release before a run or when idle (default
 	// true). PRODUCTOS_AGENT_NO_UPDATE=1 turns it off too.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
+	// Worktrees lets a run the server asks to isolate (options.worktree) work in its own git worktree under the state
+	// directory (default true). false keeps every run in the linked checkout, one at a time.
+	Worktrees *bool `json:"worktrees,omitempty"`
+	// MaxParallelRuns is how many runs this device takes at once (default 3, at least 1), announced to the server.
+	MaxParallelRuns int `json:"max_parallel_runs,omitempty"`
 }
 
+// DefaultParallelRuns is max_parallel_runs when config.json says nothing.
+const DefaultParallelRuns = 3
+
 func (c *Config) PushEnabled() bool { return c.Push == nil || *c.Push }
+
+// WorktreesEnabled: on unless config.json says "worktrees": false.
+func (c *Config) WorktreesEnabled() bool { return c.Worktrees == nil || *c.Worktrees }
+
+// ParallelRuns is how many runs the daemon accepts at once. Without worktrees every run happens in the linked
+// checkout, so it is 1 whatever max_parallel_runs says (the server's one-run-per-checkout rule).
+func (c *Config) ParallelRuns() int {
+	if !c.WorktreesEnabled() {
+		return 1
+	}
+	if c.MaxParallelRuns <= 0 {
+		return DefaultParallelRuns
+	}
+	return max(c.MaxParallelRuns, 1)
+}
 
 // AutoUpdateEnabled: on unless config.json or the environment turns it off.
 func (c *Config) AutoUpdateEnabled() bool {

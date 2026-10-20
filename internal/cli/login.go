@@ -115,7 +115,7 @@ func login(ctx context.Context, server, name string, noBrowser bool, cmd *cobra.
 			deviceName = "my machine"
 		}
 	}
-	device, err := client.RegisterDevice(ctx, api.RegisterDeviceInput{Name: deviceName, Platform: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.String(), Tools: detected})
+	device, err := client.RegisterDevice(ctx, api.RegisterDeviceInput{Name: deviceName, Platform: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.String(), Tools: detected, MaxParallelRuns: cfg.ParallelRuns()})
 	if err != nil {
 		return fmt.Errorf("signed in, but the device could not be registered: %w", err)
 	}
