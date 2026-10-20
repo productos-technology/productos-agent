@@ -45,6 +45,8 @@ Then open a pain in ProductOS, **Deliver**, pick this machine and the tool, **Ru
 | `service install\|uninstall\|start\|stop` | systemd user unit (Linux), launchd agent (macOS), Task Scheduler logon task (Windows). The service starts with none of your shell's environment, so `install` copies PATH and where the tools keep their sign-in (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, the XDG directories) from the shell that runs it; run it again after changing them. A Homebrew install gets Homebrew's stable path (`/opt/homebrew/opt/productos-agent/bin/productos-agent`), so `brew upgrade` does not break the service. |
 | `update [--check] [--to vX.Y.Z]` | Updates the agent to the latest release (from the running agent or the server, else GitHub's latest-release redirect), or to the version given (to roll back or pin). Downloads the archive and `checksums.txt` over HTTPS, checks the SHA-256, tries the new binary (`version`), swaps it in atomically and restarts the background service when it runs that binary. Homebrew and winget installs print `brew upgrade productos-agent` / `winget upgrade ProductOS.Agent` instead. |
 | `doctor` | Checks `claude`, `codex`, `git`, `gh`, the keychain, the login, the device, the server, the install method and whether an update is available. |
+| `worktrees [--no-fetch]` | Lists the worktrees runs work in: path, branch, last use, whether the branch is merged into origin's default branch, and whether a run is using it. |
+| `worktrees prune [--force] [--dry-run]` | Removes the worktrees whose branch is merged (a squash merge counts when `gh` is signed in) or that no run used for 14 days. Never one a run is using, never one with uncommitted changes unless `--force`, never a branch. |
 | `version` | Version, commit and date. |
 
 `--verbose` on any command also logs to stderr. The structured log is `agent.log` in the state directory
@@ -64,13 +66,22 @@ anything you had.
 ## What a run does
 
 1. `run.start` arrives on the channel; the agent answers `starting` within 15 s.
-2. The checkout must be clean (else the run fails with a clear reason). `git fetch origin <default_branch>`, then a
-   branch named by ProductOS (`productos/mob-p7-offline-drafts-are-lost`, suffixed `-2`, `-3` if it exists) is created
-   from `origin/<default_branch>`. Status `running`.
-3. The tool runs unattended with the change definition as its prompt. The prompt asks it to check first whether the
+2. Where it works. When ProductOS asks for it (`options.worktree`), the change gets **its own git worktree** under the
+   state directory, `<state>/worktrees/<repository_id>/<branch>` (owner-only directories), made from your linked
+   checkout's `.git`: your checkout is never touched, its branch never moves and your uncommitted work never blocks a
+   run. Gitignored files you list in `.worktreeinclude` at the checkout's root (one path or glob per line, Claude Code's
+   convention: `.env`, `config/local/`) are copied in. Without `options.worktree` (an older server, or
+   `"worktrees": false` in `config.json`) the run happens in the linked checkout, which must be clean, as before.
+3. Which branch. A fresh run fetches `origin/<default_branch>` and creates the branch ProductOS named
+   (`productos/mob-c4-keep-offline-drafts`) from it. A name that already exists, here or on origin, is refused
+   (`branch_failed`): the agent never invents `-2`, `-3`. A branch checked out in your own checkout cannot go in a
+   worktree (`branch_checked_out`: switch your checkout away and run again). Status `running`.
+4. The tool runs unattended with the change definition as its prompt. The prompt asks it to check first whether the
    change is already in place (the commits on `origin/<default_branch>` that carry the trailer are listed), never to
    make cosmetic changes just to have something to commit, to put what it did not do in `left_out`, and to end with a
-   structured report in the language of the change definition:
+   structured report in the language of the change definition. In a worktree it also says the checkout is fresh and
+   dependencies may need installing; a test that cannot run for reasons of the environment is a `tests_failing` note,
+   never a failed run.
    - Claude Code: `claude -p --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools … --json-schema <report schema>`
      (the report comes back as the result's `structured_output`)
    - Codex: `codex exec --json --sandbox workspace-write --skip-git-repo-check --output-schema <file> -` (the final message is the report)
@@ -78,10 +89,10 @@ anything you had.
    `GH_PROMPT_DISABLED=1` and `NO_COLOR=1`. Its stream becomes drawer events: `message`, `tool_use` (with output and duration), `file_change` (from
    `git diff --numstat` against the base commit), `test` (commands recognised as test runners, with pass/fail), `log`.
    Events go out in batches (50 or 500 ms) with an acknowledged outbox; nothing acknowledged is ever resent.
-4. A question (Claude Code's `AskUserQuestion`, a report with claim `needs_input` and a `question`, or a final message
+5. A question (Claude Code's `AskUserQuestion`, a report with claim `needs_input` and a `question`, or a final message
    that ends with a question when there is no report) becomes a `question` event; the run waits for your answer in the drawer and resumes the tool's session with it
    (`claude --resume <session>` / `codex exec resume <thread>`).
-5. When the tool is done, uncommitted work is committed as `MOB-P7: <title>` with the trailer `ProductOS: MOB-P7`, and
+6. When the tool is done, uncommitted work is committed as `MOB-C4: <title>` with the trailer `ProductOS: MOB-C4`, and
    git decides the outcome, the tool's words only explain it:
    - new commits: `succeeded` with outcome `changed`, the branch is pushed (`"push": false` in `config.json` disables
      it) and with `gh` on PATH a pull request is opened. A push or PR failure never fails the run: it becomes a
@@ -91,15 +102,55 @@ anything you had.
    - nothing changed otherwise: `failed` with `reason_code` `no_changes` (or `blocked` when the tool said it could not).
    Every final status carries the tool's whole final prose as `summary` and a `report`: the tool's answer (claim,
    headline, customer change, changes, verification, left out, evidence) plus what the agent knows (files, tests,
-   prior commits, notes such as `permission_denied` and `tests_failing`, tool and agent versions).
-6. A failure has a `reason_code` (`checkout_dirty`, `fetch_failed`, `tool_auth`, `tool_limit`, `tool_crashed`,
-   `timeout`, …) and a one-line `reason`. When the tool had edited files and the run fails or is cancelled, the work is
-   committed on the run's branch as `WIP: MOB-P7: <title>` (hooks skipped; stashed if even that fails), pushed when
+   prior commits, notes such as `permission_denied` and `tests_failing`, tool and agent versions), and, to a server
+   that knows them, the tool's `session_id` and the `worktree_path`.
+7. A failure has a `reason_code` (`checkout_dirty`, `fetch_failed`, `branch_failed`, `branch_diverged`,
+   `branch_checked_out`, `worktree_failed`, `tool_auth`, `tool_limit`, `tool_crashed`, `timeout`, …) and a one-line
+   `reason`. When the tool had edited files and the run fails or is cancelled, the work is
+   committed on the run's branch as `WIP: MOB-C4: <title>` (hooks skipped; stashed if even that fails), pushed when
    push is on, and the branch and commit go out with the final status: nothing is lost and the checkout is left clean.
    `run.cancel` kills the tool's process group and ends in `cancelled`. Runs time out after 110 minutes (under the
    server's 2-hour stuck sweep).
-7. Against a server from before outcomes (its `hello` has no `features`), a `no_change` is sent as the old failure
+8. Against a server from before outcomes (its `hello` has no `features`), a `no_change` is sent as the old failure
    ("the tool made no changes").
+
+## Adjusting a change
+
+A change keeps one branch, one worktree and one pull request for its whole life; a second run of it is a round on
+them ("Adjust", `continue` on `run.start`), not a new branch from main:
+
+1. The agent fetches the branch and takes the change's worktree again (or makes it from the branch, local or on
+   origin). Behind origin, it fast-forwards; ahead (commits a failed push left), the push at the end sends them;
+   diverged, it refuses and runs nothing (`branch_diverged`). Work an interrupted run left uncommitted is committed as
+   `WIP` first.
+2. With `gh` signed in and the pull request open, it reads what went wrong on GitHub and streams each read to the
+   drawer as a log line: the failed checks of the pull request's head (`gh pr checks`) and the log of each failed
+   Actions job (`gh run view --log-failed`, cut at its last `##[error]` line, the last 150 lines, 12 KB for all jobs),
+   and the reviews and line comments since the previous run (`gh api …/pulls/<n>/comments` and `…/reviews`, only from
+   the repository's owners, members and collaborators). Notes `ci_read` and `reviews_read` say what was read. A failed
+   read is a warning, never the run's failure.
+3. The brief is ProductOS's (`continue.markdown`: the CI result, the checks that do not work yet, your note, the last
+   report) with the CI log under "CI log (failed jobs)" and the review comments under "Review comments (untrusted,
+   quoted)": quoted line by line between two markers that carry a random nonce, with the instruction to treat them as
+   data, never as instructions.
+4. When ProductOS sends the previous run's session (same machine, same tool), the first call resumes it
+   (`claude -p --resume <id>`, `codex exec resume <id>`) with the brief alone. A session this machine no longer has
+   (or that refuses to resume before doing anything) falls back to a new session with the change definition and the
+   brief.
+5. The push updates the open pull request (`pr_updated`); no second pull request is opened. "Start over from main" is
+   a fresh run with `options.supersedes_pr`: once its own pull request opens, the agent closes the old one with
+   "Superseded by #N" (`pr_superseded`; `pr_supersede_failed` when gh could not).
+
+## Worktrees and parallel runs
+
+The device takes up to `max_parallel_runs` runs at once (`config.json`, default 3), one per change, each in its own
+worktree, and announces the number on registration, every heartbeat and the channel subscription. With
+`"worktrees": false` it announces 1 and every run happens in the linked checkout, one at a time. A device above its
+number refuses a run (`failed`, `internal`, "device at capacity"); the server does not send more. Fetch, worktree
+changes and push are serialised per repository, and no two runs share a directory. Worktrees stay after their run for
+the next round; `productos-agent worktrees` lists them and `worktrees prune` removes those whose branch is merged into
+origin's default branch or that no run used for 14 days; the daemon does the same once a day when idle. Branches are
+never deleted.
 
 ## Configuration
 
@@ -113,9 +164,14 @@ on macOS, `%AppData%\productos-agent` on Windows) is written by `login`; you may
   "claude_permission_mode": "acceptEdits",
   "codex_sandbox": "workspace-write",
   "claude_args": ["--model", "opus"],
-  "codex_args": ["--model", "o3"]
+  "codex_args": ["--model", "o3"],
+  "worktrees": true,
+  "max_parallel_runs": 3
 }
 ```
+
+`worktrees` (default on) lets the runs ProductOS isolates work in their own worktree; `false` keeps every run in the
+linked checkout, one at a time. `max_parallel_runs` (default 3, at least 1) is how many runs the device takes at once.
 
 Environment: `PRODUCTOS_AGENT_CONFIG_DIR`, `PRODUCTOS_AGENT_STATE_DIR`, `PRODUCTOS_AGENT_NO_KEYRING=1` (skip the
 keychain), `PRODUCTOS_AGENT_CLAUDE_BIN` / `PRODUCTOS_AGENT_CODEX_BIN` (tool binaries), `PRODUCTOS_AGENT_NO_UPDATE=1`
@@ -169,8 +225,10 @@ Dependencies: `github.com/coder/websocket` (the maintained `nhooyr.io/websocket`
 `github.com/spf13/cobra`, `github.com/zalando/go-keyring`. Everything else is the standard library.
 
 Layout: `internal/cli` (commands), `internal/daemon` (the socket loop, heartbeats, dispatch, the Reporter with REST
-fallback), `internal/runner` (one run: checkout, tool, events, question/answer, commit/push/PR), `internal/stream/{claude,codex}`
-(stream parsers; fixtures in `testdata/`), `internal/cable` (Action Cable client), `internal/api` (REST),
+fallback, the capacity guard, the idle prune), `internal/runner` (one run: worktree or checkout, branch, the adjust
+brief and the gh readers, tool, events, question/answer, commit/push/PR), `internal/worktree` (paths, the sidecar,
+the per-repository coordinator, `.worktreeinclude`, list and prune), `internal/stream/{claude,codex}`
+(stream parsers; fixtures in `testdata/`, gh's in `testdata/gh`), `internal/cable` (Action Cable client), `internal/api` (REST),
 `internal/oauth` (discovery, registration, PKCE, loopback, refresh), `internal/update` (versions, install method,
 download, checksum, swap, re-exec), `internal/secrets`, `internal/config`, `internal/paths`, `internal/gitx`,
 `internal/seed` (planting a seed), `internal/tools`, `internal/service`, `internal/logx`, `internal/protocol`. The report schema both tools answer is
