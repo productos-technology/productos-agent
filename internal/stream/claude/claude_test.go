@@ -216,3 +216,16 @@ func TestStructuredRetriesExhaustedIsNotAFailure(t *testing.T) {
 		t.Errorf("final = %+v", final)
 	}
 }
+
+// `claude -p --resume <id>` for a session this machine does not have: one failed result, no turn, and the reason in
+// `errors` (recorded from Claude Code 2.1.x).
+func TestResumeOfAnUnknownSessionSaysWhy(t *testing.T) {
+	items := feedFile(t, "resume_not_found.jsonl")
+	if len(items) != 2 || items[0].Kind != stream.Session || items[1].Kind != stream.Result {
+		t.Fatalf("items = %v", kinds(items))
+	}
+	res := items[1]
+	if !res.IsFailure || res.Subtype != "error_during_execution" || !strings.Contains(res.Text, "No conversation found with session ID") {
+		t.Errorf("result = %+v", res)
+	}
+}

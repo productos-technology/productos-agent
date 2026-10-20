@@ -40,6 +40,9 @@ const (
 	codeCheckoutDirty    = "checkout_dirty"
 	codeFetchFailed      = "fetch_failed"
 	codeBranchFailed     = "branch_failed"
+	codeBranchDiverged   = "branch_diverged"
+	codeBranchCheckedOut = "branch_checked_out"
+	codeWorktreeFailed   = "worktree_failed"
 	codeToolMissing      = "tool_missing"
 	codeToolAuth         = "tool_auth"
 	codeToolCrashed      = "tool_crashed"
@@ -69,9 +72,15 @@ const (
 	noteTestsFailing     = "tests_failing"
 	notePermissionDenied = "permission_denied"
 	notePriorCommits     = "prior_commits"
-	NoteUpdateAvailable  = "update_available"
-	NoteUpdated          = "updated"
-	NoteUpdateFailed     = "update_failed"
+	// An adjust run: what the agent read on GitHub, and what it did with the pull request.
+	noteCIRead            = "ci_read"
+	noteReviewsRead       = "reviews_read"
+	notePRUpdated         = "pr_updated"
+	notePRSuperseded      = "pr_superseded"
+	notePRSupersedeFailed = "pr_supersede_failed"
+	NoteUpdateAvailable   = "update_available"
+	NoteUpdated           = "updated"
+	NoteUpdateFailed      = "update_failed"
 )
 
 // toolAnswer is the tool's answer to the report schema.

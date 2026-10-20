@@ -41,12 +41,29 @@ func fakeTool() {
 			resumed = true
 		}
 	}
+	if logPath := os.Getenv("PRODUCTOS_AGENT_FAKE_PROMPT_LOG"); logPath != "" {
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			wd, _ := os.Getwd()
+			fmt.Fprintf(f, "=== ARGS %s\n=== DIR %s\n%s\n=== END\n", strings.Join(os.Args[1:], " "), wd, prompt)
+			f.Close()
+		}
+	}
+	if resumed && os.Getenv("PRODUCTOS_AGENT_FAKE_RESUME_FAIL") == "1" {
+		// What `claude -p --resume <id>` prints for a session this machine does not have.
+		fmt.Println(`{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"s-prev","result":"","errors":["No conversation found with session ID: s-prev"]}`)
+		fmt.Fprintln(os.Stderr, "No conversation found with session ID: s-prev")
+		os.Exit(1)
+	}
 	if !resumed && !strings.Contains(string(prompt), "ProductOS Agent") {
 		fmt.Fprintln(os.Stderr, "fake tool: prompt lacks the preamble")
 		os.Exit(2)
 	}
-	if resumed && !strings.Contains(string(prompt), "The person answered your question") {
-		fmt.Fprintln(os.Stderr, "fake tool: resumed prompt lacks the answer")
+	expect := os.Getenv("PRODUCTOS_AGENT_FAKE_RESUMED_EXPECT")
+	if expect == "" {
+		expect = "The person answered your question"
+	}
+	if resumed && !strings.Contains(string(prompt), expect) {
+		fmt.Fprintln(os.Stderr, "fake tool: resumed prompt lacks "+expect)
 		os.Exit(2)
 	}
 	fixture := os.Getenv("PRODUCTOS_AGENT_FAKE_FIXTURE")
@@ -78,6 +95,10 @@ func fakeTool() {
 			time.Sleep(30 * time.Second)
 			continue
 		}
+		if sc.Text() == "#PAUSE" {
+			time.Sleep(time.Second)
+			continue
+		}
 		fmt.Println(sc.Text())
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -96,6 +117,9 @@ type fakeServer struct {
 	heartbts int
 	// what the test injects
 	start        protocol.ServerMessage
+	more         []protocol.ServerMessage // run.starts sent right after start
+	subscribed   map[string]any           // the AgentChannel identifier the device subscribed with
+	patched      []map[string]any         // the REST heartbeats' bodies
 	answerText   string
 	cancelAt     string // event kind that triggers run.cancel
 	rejectRemote bool
@@ -202,6 +226,7 @@ func (f *fakeServer) deviceRoutes(w http.ResponseWriter, r *http.Request) {
 		if t, ok := in["tools"]; ok {
 			f.devices[id]["tools"] = t
 		}
+		f.patched = append(f.patched, in)
 		f.heartbts++
 		writeJSON(w, 200, f.deviceView(id))
 	case len(parts) == 1 && r.Method == http.MethodDelete:
@@ -339,6 +364,8 @@ func (f *fakeServer) cable(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal([]byte(frame.Identifier), &ident)
 			f.mu.Lock()
 			_, known := f.devices[ident.DeviceID]
+			f.subscribed = map[string]any{}
+			_ = json.Unmarshal([]byte(frame.Identifier), &f.subscribed)
 			f.mu.Unlock()
 			if ident.Channel != "AgentChannel" || !known {
 				send(map[string]any{"type": "reject_subscription", "identifier": frame.Identifier})
@@ -370,10 +397,17 @@ func (f *fakeServer) cable(w http.ResponseWriter, r *http.Request) {
 			if start.RunID == "" || seeded {
 				continue
 			}
-			raw, _ := json.Marshal(start)
-			var m map[string]any
-			_ = json.Unmarshal(raw, &m)
-			send(map[string]any{"identifier": identifier, "message": m})
+			for _, msg := range append([]protocol.ServerMessage{start}, f.more...) {
+				f.mu.Lock()
+				if f.runs[msg.RunID] == nil {
+					f.runs[msg.RunID] = &fakeRun{status: "queued", final: make(chan protocol.StatusReport, 1)}
+				}
+				f.mu.Unlock()
+				raw, _ := json.Marshal(msg)
+				var m map[string]any
+				_ = json.Unmarshal(raw, &m)
+				send(map[string]any{"identifier": identifier, "message": m})
+			}
 		case "message":
 			var d map[string]any
 			_ = json.Unmarshal([]byte(frame.Data), &d)

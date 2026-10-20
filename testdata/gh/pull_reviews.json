@@ -1,0 +1,8 @@
+[
+  {"id": 10, "user": {"login": "sam"}, "body": "", "state": "COMMENTED", "submitted_at": "2026-10-19T15:01:00Z", "author_association": "OWNER"},
+  {"id": 11, "user": {"login": "pat"}, "body": "Two things before this can go in.", "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-19T15:02:00Z", "author_association": "MEMBER"},
+  {"id": 12, "user": {"login": "lee"}, "body": "", "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-19T16:31:00Z", "author_association": "COLLABORATOR"},
+  {"id": 13, "user": {"login": "pat"}, "body": "draft", "state": "PENDING", "submitted_at": "2026-10-19T17:00:00Z", "author_association": "MEMBER"},
+  {"id": 14, "user": {"login": "bot"}, "body": "Coverage 81%", "state": "COMMENTED", "submitted_at": "2026-10-19T17:05:00Z", "author_association": "NONE"},
+  {"id": 15, "user": {"login": "sam"}, "body": "Stale", "state": "DISMISSED", "submitted_at": "2026-10-19T17:06:00Z", "author_association": "OWNER"}
+]

@@ -18,8 +18,10 @@ type State struct {
 	Connected     bool      `json:"connected"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
 	ActiveRuns    []string  `json:"active_runs"`
-	Error         string    `json:"error,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// Worktrees are the directories runs work in now: `productos-agent worktrees prune` leaves them alone.
+	Worktrees []string  `json:"worktrees,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 	// Version, InstallMethod and Agent (the server's version block, when it sent one) feed `status`, `doctor` and
 	// `update`.
 	Version       string                  `json:"version,omitempty"`

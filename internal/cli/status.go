@@ -40,6 +40,11 @@ func statusCmd() *cobra.Command {
 			out(w, "Login:    signed in (%s; access token renews at %s)", where, tokens.ExpiresAt.Local().Format(time.Stamp))
 			detected := tools.Detect(cmd.Context())
 			out(w, "Tools:    %s", describeTools(detected))
+			if s.cfg.WorktreesEnabled() {
+				out(w, "Runs:     up to %d at once, each change in its own worktree (`productos-agent worktrees`)", s.cfg.ParallelRuns())
+			} else {
+				out(w, "Runs:     one at a time, in the linked checkout (worktrees are off in config.json)")
+			}
 
 			if state, _ := daemon.ReadState(); state != nil && state.Alive() {
 				conn := "connecting"

@@ -1,0 +1,87 @@
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:00.0000000Z ##[group]Run npm ci
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:01.1234567Z npm warn deprecated package-0@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:02.2469134Z npm warn deprecated package-1@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:03.3703701Z npm warn deprecated package-2@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:04.4938268Z npm warn deprecated package-3@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:05.6172835Z npm warn deprecated package-4@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:06.7407402Z npm warn deprecated package-5@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:07.8641969Z npm warn deprecated package-6@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:08.9876536Z npm warn deprecated package-7@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:09.1111103Z npm warn deprecated package-8@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:10.2345670Z npm warn deprecated package-9@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:11.3580237Z npm warn deprecated package-10@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:12.4814804Z npm warn deprecated package-11@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:13.6049371Z npm warn deprecated package-12@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:14.7283938Z npm warn deprecated package-13@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:15.8518505Z npm warn deprecated package-14@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:16.9753072Z npm warn deprecated package-15@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:17.0987639Z npm warn deprecated package-16@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:18.2222206Z npm warn deprecated package-17@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:19.3456773Z npm warn deprecated package-18@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:20.4691340Z npm warn deprecated package-19@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:21.5925907Z npm warn deprecated package-20@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:22.7160474Z npm warn deprecated package-21@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:23.8395041Z npm warn deprecated package-22@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:24.9629608Z npm warn deprecated package-23@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:25.0864175Z npm warn deprecated package-24@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:26.2098742Z npm warn deprecated package-25@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:27.3333309Z npm warn deprecated package-26@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:28.4567876Z npm warn deprecated package-27@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:29.5802443Z npm warn deprecated package-28@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:30.7037010Z npm warn deprecated package-29@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:31.8271577Z npm warn deprecated package-30@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:32.9506144Z npm warn deprecated package-31@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:33.0740711Z npm warn deprecated package-32@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:34.1975278Z npm warn deprecated package-33@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:35.3209845Z npm warn deprecated package-34@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:36.4444412Z npm warn deprecated package-35@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:37.5678979Z npm warn deprecated package-36@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:38.6913546Z npm warn deprecated package-37@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:39.8148113Z npm warn deprecated package-38@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:40.9382680Z npm warn deprecated package-39@1.0.0: use something else
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:41.0617247Z ##[endgroup]
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:42.1851814Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:43.3086381Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:44.4320948Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:45.5555515Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:46.6790082Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:47.8024649Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:48.9259216Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:49.0493783Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:50.1728350Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:51.2962917Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:52.4197484Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:53.5432051Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:54.6666618Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:55.7901185Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:56.9135752Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:57.0370319Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:58.1604886Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:10:59.2839453Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:00.4074020Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:01.5308587Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:02.6543154Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:03.7777721Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:04.9012288Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:05.0246855Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:06.1481422Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:07.2715989Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:08.3950556Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:09.5185123Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:10.6419690Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:11.7654257Z [33mwarning[0m: Status code :unprocessable_entity is deprecated
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:12.8888824Z 
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:13.0123391Z  FAIL  src/drafts/store.test.ts > drafts > survive a reload
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:14.1357958Z AssertionError: expected undefined to equal 'hello'
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:15.2592525Z  ❯ src/drafts/store.test.ts:42:18
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:16.3827092Z      40|   await reload();
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:17.5061659Z      41|   const draft = await store.get('d1');
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:18.6296226Z      42|   expect(draft).toEqual('hello');
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:19.7530793Z 
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:20.8765360Z  Test Files  1 failed | 12 passed (13)
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:21.9999927Z       Tests  1 failed | 88 passed (89)
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:22.1234494Z ##[error]Process completed with exit code 1.
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:23.2469061Z ##[group]Run actions/upload-artifact@v4
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:24.3703628Z Post job cleanup.
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:25.4938195Z Stop and remove container: 804569fc159c45ceaf33a9d314095a1e_redis8alpine_df50c7
+Tests (unit)	UNKNOWN STEP	2026-10-20T20:11:26.6172762Z Cleaning up orphan processes

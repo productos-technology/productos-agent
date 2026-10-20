@@ -1,7 +1,9 @@
-// Package runner executes one `run.start`: prepares the checkout (clean tree, fetch, branch), drives the tool in
-// its JSON streaming mode, turns its stream into protocol events, relays questions and answers, and finishes with an
-// outcome git decides (a commit, a push, optionally a pull request; or nothing to change), a structured report and
-// the final status. Work the tool did is never lost: a run that fails or is cancelled commits it on its branch.
+// Package runner executes one `run.start`: prepares where the run works (the change's own worktree, or the linked
+// checkout; a new branch, or for an adjust run the branch it continues), drives the tool in its JSON streaming mode
+// (resuming the previous session when this machine has it), turns its stream into protocol events, relays questions
+// and answers, and finishes with an outcome git decides (a commit, a push, a pull request opened or updated; or
+// nothing to change), a structured report and the final status. Work the tool did is never lost: a run that fails or
+// is cancelled commits it on its branch.
 package runner
 
 import (
@@ -15,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +29,7 @@ import (
 	"github.com/productos-technology/productos-agent/internal/stream"
 	"github.com/productos-technology/productos-agent/internal/tools"
 	"github.com/productos-technology/productos-agent/internal/version"
+	"github.com/productos-technology/productos-agent/internal/worktree"
 )
 
 const (
@@ -66,6 +70,14 @@ type Run struct {
 	BeforePrepare func(ctx context.Context, run *Run) []protocol.Note
 	// Notes are facts known before the run started (the daemon's `updated`).
 	Notes []protocol.Note
+	// GH is the signed-in gh the daemon detected ("" without): an adjust run reads the CI log and the review comments
+	// with it.
+	GH string
+	// Coord serialises the git work of the device's runs per repository and keeps two runs out of one directory (the
+	// daemon's; a private one when nil).
+	Coord *worktree.Coordinator
+
+	ghExec ghExec // tests
 
 	mu        sync.Mutex
 	cancelled bool
@@ -74,18 +86,25 @@ type Run struct {
 	procPID   int
 	answers   chan Answer
 
-	emitter   *emitter
-	repo      *gitx.Repo
-	from      string
-	branch    string
-	base      string
-	sessionID string
-	reported  map[string]gitx.Change
-	tests     testStats
-	prior     []string
-	prose     string
-	answer    *toolAnswer
-	notes     []protocol.Note
+	emitter *emitter
+	// main is the person's checkout; repo is where the run works (main itself, or the change's worktree).
+	main     *gitx.Repo
+	repo     *gitx.Repo
+	worktree string
+	release  func()
+	from     string
+	branch   string
+	base     string
+	// sessionID is the session the next call resumes; lastSession the tool's session as it last announced it (what
+	// the final status reports, for the next adjust run).
+	sessionID   string
+	lastSession string
+	reported    map[string]gitx.Change
+	tests       testStats
+	prior       []string
+	prose       string
+	answer      *toolAnswer
+	notes       []protocol.Note
 }
 
 type testStats struct {
@@ -177,6 +196,18 @@ func (r *Run) Execute(parent context.Context) protocol.StatusReport {
 	}
 	final.Summary = clip(r.summary(final), maxSummary)
 	final.Report = r.report()
+	if r.lastSession != "" && r.supports("continue") {
+		final.SessionID = r.lastSession
+		final.Report.SessionID = r.lastSession
+	}
+	if r.worktree != "" && r.supports("worktree") {
+		final.WorktreePath = r.worktree
+		final.Report.WorktreePath = r.worktree
+	}
+	r.touchMeta()
+	if r.release != nil {
+		r.release()
+	}
 	r.emitter.Close(context.Background())
 	if err := r.Reporter.Status(wrap, r.Start.RunID, final); err != nil && !errors.Is(err, ErrRunFinished) {
 		r.Log.Error("final status not delivered", "status", final.Status, "error", err)
@@ -213,7 +244,7 @@ func (r *Run) execute(ctx context.Context) protocol.StatusReport {
 	if err := r.status(ctx, protocol.StatusRunning); err != nil {
 		return r.fail(serverCode(err), "could not report the run as running: "+err.Error())
 	}
-	r.info(fmt.Sprintf("Branch `%s` created from `origin/%s` in %s.", r.branch, r.from, r.repo.Dir))
+	r.info(r.preparedLine())
 	r.lookupPriorCommits(ctx)
 
 	inv := Invocation{Bin: bin, Dir: r.repo.Dir, Config: r.Config}
@@ -226,7 +257,18 @@ func (r *Run) execute(ctx context.Context) protocol.StatusReport {
 		inv.SchemaFile = path
 	}
 
-	input := buildPrompt(r.Start, r.repo.Dir, r.branch, driver.AsksWithTool(), r.prior)
+	facts := promptFacts{Dir: r.repo.Dir, Branch: r.branch, AsksWithTool: driver.AsksWithTool(), Prior: r.prior, Worktree: r.worktree != ""}
+	if c := r.Start.Continue; c != nil {
+		ci, reviews := r.readGitHub(ctx)
+		facts.Adjust, facts.Brief = c, renderBrief(c, ci, reviews, "")
+	}
+	input := buildPrompt(r.Start, facts)
+	resuming := false
+	if id := r.resumable(); id != "" {
+		// The previous run's session on this machine: it knows the change already, so it gets the brief only.
+		r.sessionID, resuming, input = id, true, facts.Brief
+		r.info("Resuming the session of the previous run.")
+	}
 	for round := 0; ; round++ {
 		if stop, ok := r.interrupted(ctx); ok {
 			return stop
@@ -234,6 +276,18 @@ func (r *Run) execute(ctx context.Context) protocol.StatusReport {
 		out, err := r.runTool(ctx, driver, inv, input)
 		if stop, ok := r.interrupted(ctx); ok {
 			return stop
+		}
+		if resuming {
+			resuming = false
+			if why, failed := resumeFailed(out, err); failed {
+				r.warn("Could not resume the previous session (" + oneLine(why, 200) + "); starting a new one with the change definition and the brief.")
+				r.sessionID, r.lastSession = "", ""
+				input = buildPrompt(r.Start, facts)
+				out, err = r.runTool(ctx, driver, inv, input)
+				if stop, ok := r.interrupted(ctx); ok {
+					return stop
+				}
+			}
 		}
 		if err != nil {
 			var re *runError
@@ -303,51 +357,6 @@ func serverCode(err error) string {
 	return codeInternal
 }
 
-// prepare: open the checkout, insist on a clean tree, fetch, branch from origin/<default>. The code says what failed.
-func (r *Run) prepare(ctx context.Context) (string, error) {
-	repo, err := gitx.Open(r.Start.Repository.LocalPath)
-	if err != nil {
-		return codeCheckoutMissing, err
-	}
-	r.repo = repo
-	clean, err := repo.IsClean(ctx)
-	if err != nil {
-		return codeInternal, err
-	}
-	if !clean {
-		return codeCheckoutDirty, fmt.Errorf("the checkout at %s has uncommitted changes; commit or stash them and run again", repo.Dir)
-	}
-	from := r.Start.Repository.DefaultBranch
-	if from == "" {
-		if from, err = repo.DefaultBranch(ctx); err != nil {
-			return codeFetchFailed, err
-		}
-	}
-	r.from = from
-	if err := repo.Fetch(ctx, from); err != nil {
-		return codeFetchFailed, err
-	}
-	name := strings.TrimSpace(r.Start.Branch)
-	if name == "" || !gitx.ValidBranch(name) {
-		name = gitx.BranchName(r.Start.Subject.Key, r.Start.Subject.Name)
-	}
-	candidate := name
-	for i := 2; repo.BranchExists(ctx, candidate) || repo.RemoteBranchExists(ctx, candidate); i++ {
-		candidate = fmt.Sprintf("%s-%d", name, i)
-		if i > 50 {
-			return codeBranchFailed, fmt.Errorf("branch %s and 50 variants already exist", name)
-		}
-	}
-	if err := repo.CreateBranch(ctx, candidate, from); err != nil {
-		return codeBranchFailed, err
-	}
-	r.branch = candidate
-	if r.base, err = repo.Head(ctx); err != nil {
-		return codeInternal, err
-	}
-	return "", nil
-}
-
 // lookupPriorCommits finds the commits on origin/<default> that already carry the trailer: an earlier run or someone
 // by hand may have done (part of) the work. The prompt lists them and the report keeps them.
 func (r *Run) lookupPriorCommits(ctx context.Context) {
@@ -389,7 +398,9 @@ type toolOutcome struct {
 	question  *stream.Item
 	sessionID string
 	changed   bool
-	items     []stream.Item // messages and the result, for extractReport
+	// worked: the session did something (a message, a tool call, a question), so it really started.
+	worked bool
+	items  []stream.Item // messages and the result, for extractReport
 }
 
 // runError carries the reason code of a tool session that went wrong.
@@ -446,6 +457,9 @@ func (r *Run) runTool(ctx context.Context, driver Driver, inv Invocation, input 
 	r.procPID = 0
 	r.mu.Unlock()
 	r.refreshChanges(ctx, &out)
+	if out.sessionID != "" && out.sessionID != inv.SessionID || out.worked {
+		r.lastSession = out.sessionID
+	}
 
 	if r.isCancelled() {
 		return out, nil
@@ -468,12 +482,15 @@ func (r *Run) handle(ctx context.Context, item stream.Item, out *toolOutcome, pe
 	case stream.Session:
 		out.sessionID = item.SessionID
 	case stream.Message:
+		out.worked = true
 		out.prose = item.Text
 		out.items = append(out.items, item)
 		r.emitter.Emit(protocol.Message("assistant", clip(item.Text, 20000)))
 	case stream.ToolUse:
+		out.worked = true
 		pending[item.ID] = item
 	case stream.ToolResult:
+		out.worked = true
 		use, known := pending[item.ID]
 		delete(pending, item.ID)
 		if !known {
@@ -505,6 +522,7 @@ func (r *Run) handle(ctx context.Context, item stream.Item, out *toolOutcome, pe
 	case stream.FileChange:
 		r.refreshChanges(ctx, out)
 	case stream.Question:
+		out.worked = true
 		q := item
 		out.question = &q
 	case stream.Result:
@@ -628,11 +646,25 @@ func (r *Run) finish(ctx context.Context) protocol.StatusReport {
 	}
 }
 
-// publish pushes the branch and opens the pull request. Neither can fail a run that has commits: what went wrong
-// becomes a report note.
+// publish pushes the branch and opens the pull request, or, when the run continues an open one, the push updates it
+// (pr_updated). Neither can fail a run that has commits: what went wrong becomes a report note. A run that starts
+// over closes the pull request it supersedes once its own opened.
 func (r *Run) publish(ctx context.Context, message string) string {
+	var open *protocol.PullRequest
+	if c := r.Start.Continue; c != nil && c.PR.Open() {
+		open = c.PR
+	}
 	if !r.push(ctx) {
+		if open != nil {
+			return open.URL // the pull request is there, without this round (the note says why)
+		}
 		return ""
+	}
+	if open != nil {
+		text := firstNonEmpty(open.URL, "#"+strconv.Itoa(open.Number))
+		r.addNote(protocol.Note{Code: notePRUpdated, Text: text})
+		r.info(fmt.Sprintf("Pull request #%d updated: %s", open.Number, text))
+		return open.URL
 	}
 	if !r.Start.Options.OpenPR {
 		return ""
@@ -646,6 +678,7 @@ func (r *Run) publish(ctx context.Context, message string) string {
 	}
 	if url != "" {
 		r.info("Pull request: " + url)
+		r.supersede(ctx, url)
 	}
 	return url
 }
@@ -656,7 +689,10 @@ func (r *Run) push(ctx context.Context) bool {
 		r.addNote(protocol.Note{Code: notePushDisabled, Text: fmt.Sprintf("push is off in config.json: %s stays on this machine", r.branch)})
 		return false
 	}
-	if err := r.repo.Push(ctx, r.branch); err != nil {
+	unlock := r.lockRepo()
+	err := r.repo.Push(ctx, r.branch)
+	unlock()
+	if err != nil {
 		r.warn("Push failed: " + err.Error())
 		r.addNote(protocol.Note{Code: notePushFailed, Text: oneLine(err.Error(), maxReason)})
 		return false
@@ -713,8 +749,8 @@ func (r *Run) commitMessage(prefix string) string {
 // openPR opens the pull request with gh; what stops it is a note (gh_missing, pr_exists with the existing URL,
 // pr_failed).
 func (r *Run) openPR(ctx context.Context, message string) (string, *protocol.Note) {
-	gh, err := exec.LookPath("gh")
-	if err != nil {
+	gh := r.ghPath()
+	if gh == "" {
 		return "", &protocol.Note{Code: noteGHMissing, Text: "gh is not installed: open the pull request from the pushed branch"}
 	}
 	title := strings.SplitN(message, "\n", 2)[0]

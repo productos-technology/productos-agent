@@ -55,6 +55,9 @@ type line struct {
 	StructuredOutput  json.RawMessage `json:"structured_output"`
 	PermissionDenials []denial        `json:"permission_denials"`
 	APIErrorStatus    *int            `json:"api_error_status"`
+	// Errors says why a session ended before it began (`--resume` of a session this machine does not have: "No
+	// conversation found with session ID: …").
+	Errors []string `json:"errors"`
 }
 
 type denial struct {
@@ -189,6 +192,14 @@ func (p *Parser) Feed(raw string) []stream.Item {
 		}
 		for _, d := range l.PermissionDenials {
 			item.Denials = append(item.Denials, stream.Denial{Tool: d.ToolName, Input: d.ToolInput})
+		}
+		if item.IsFailure && item.Text == "" {
+			for _, e := range l.Errors {
+				if strings.TrimSpace(e) != "" {
+					item.Text = strings.TrimSpace(e)
+					break
+				}
+			}
 		}
 		if item.IsFailure && item.Text == "" {
 			item.Text = l.Subtype

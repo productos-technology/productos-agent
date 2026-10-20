@@ -30,6 +30,7 @@ import (
 	"github.com/productos-technology/productos-agent/internal/tools"
 	"github.com/productos-technology/productos-agent/internal/update"
 	"github.com/productos-technology/productos-agent/internal/version"
+	"github.com/productos-technology/productos-agent/internal/worktree"
 )
 
 const (
@@ -37,6 +38,10 @@ const (
 	redetectEvery  = 5 * time.Minute
 	ackTimeout     = 10 * time.Second
 	maxBackoff     = 60 * time.Second
+	// pruneCheckEvery / pruneEvery: an idle daemon removes merged and long-unused worktrees once a day (the first
+	// time an hour after it starts).
+	pruneCheckEvery = time.Hour
+	pruneEvery      = 24 * time.Hour
 )
 
 // ErrDeviceRevoked: the server no longer knows this device; the person must sign in again.
@@ -76,6 +81,11 @@ type Daemon struct {
 	// pending holds the run.start of runs acknowledged but not yet past the update gate (what a handoff carries).
 	pending map[string]protocol.ServerMessage
 
+	// coord serialises the runs' git work per repository and keeps two runs out of one directory.
+	coord     *worktree.Coordinator
+	lastPrune time.Time
+	pruning   atomic.Bool
+
 	// seeds are the seed.plant messages being worked on, by seed id; a seed never blocks a run.
 	seedsMu sync.Mutex
 	seeds   map[string]bool
@@ -113,6 +123,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	update.CleanOld(d.Exe)
 	d.runs = map[string]*runner.Run{}
 	d.pending = map[string]protocol.ServerMessage{}
+	d.coord = worktree.NewCoordinator()
 	d.seeds = map[string]bool{}
 	d.acks = map[string]chan protocol.ServerMessage{}
 	d.failedUpdates = map[string]time.Time{}
@@ -127,7 +138,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	d.lastRESTBeat = time.Now() // ensureDevice was a REST heartbeat
-	d.Log.Info("agent ready", "device_id", d.Config.DeviceID, "server", d.Config.Server, "version", d.Version, "tools", toolSummary(d.tools))
+	d.Log.Info("agent ready", "device_id", d.Config.DeviceID, "server", d.Config.Server, "version", d.Version, "tools", toolSummary(d.tools), "max_parallel_runs", d.Config.ParallelRuns())
 	d.resumeHandoff(ctx)
 
 	backoff := time.Second
@@ -178,7 +189,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 // ensureDevice registers the machine once, or re-registers when the stored id is gone.
 func (d *Daemon) ensureDevice(ctx context.Context) error {
 	if d.Config.DeviceID != "" {
-		_, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: d.tools, AgentVersion: d.Version})
+		_, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: d.tools, AgentVersion: d.Version, MaxParallelRuns: d.Config.ParallelRuns()})
 		if err == nil {
 			return nil
 		}
@@ -189,7 +200,7 @@ func (d *Daemon) ensureDevice(ctx context.Context) error {
 		d.Config.DeviceID = ""
 	}
 	device, err := d.API.RegisterDevice(ctx, api.RegisterDeviceInput{
-		Name: d.deviceName(), Platform: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: d.Version, Tools: d.tools,
+		Name: d.deviceName(), Platform: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: d.Version, Tools: d.tools, MaxParallelRuns: d.Config.ParallelRuns(),
 	})
 	if err != nil {
 		return fmt.Errorf("device registration failed: %w", err)
@@ -220,7 +231,7 @@ func (d *Daemon) connect(ctx context.Context) (*cable.Conn, error) {
 		return nil, err
 	}
 	d.toolsMu.Lock()
-	ident := map[string]any{"channel": "AgentChannel", "device_id": d.Config.DeviceID, "tools": d.tools, "agent_version": d.Version}
+	ident := map[string]any{"channel": "AgentChannel", "device_id": d.Config.DeviceID, "tools": d.tools, "agent_version": d.Version, "max_parallel_runs": d.Config.ParallelRuns()}
 	d.toolsMu.Unlock()
 	conn, err := cable.Dial(ctx, cable.Options{Server: d.Config.Server, Token: token, Identifier: ident, UserAgent: "productos-agent/" + d.Version})
 	if err != nil && strings.Contains(err.Error(), "401") {
@@ -236,6 +247,8 @@ func (d *Daemon) serve(ctx context.Context, conn *cable.Conn) bool {
 	defer heartbeat.Stop()
 	redetect := time.NewTicker(redetectEvery)
 	defer redetect.Stop()
+	prune := time.NewTicker(pruneCheckEvery)
+	defer prune.Stop()
 	d.touchHeartbeat()
 	for {
 		select {
@@ -283,6 +296,8 @@ func (d *Daemon) serve(ctx context.Context, conn *cable.Conn) bool {
 			}
 		case s := <-d.stagedCh:
 			d.installStaged(s)
+		case <-prune.C:
+			d.maybePrune(ctx)
 		}
 	}
 }
@@ -294,14 +309,14 @@ func (d *Daemon) heartbeat(ctx context.Context, conn *cable.Conn) {
 	t := d.tools
 	d.toolsMu.Unlock()
 	if time.Since(d.lastRESTBeat) < versionCheckEvery {
-		err := conn.Perform(ctx, "heartbeat", map[string]any{"tools": t, "agent_version": d.Version})
+		err := conn.Perform(ctx, "heartbeat", map[string]any{"tools": t, "agent_version": d.Version, "max_parallel_runs": d.Config.ParallelRuns()})
 		if err == nil {
 			d.touchHeartbeat()
 			return
 		}
 		d.Log.Debug("heartbeat over the socket failed; using REST", "error", err)
 	}
-	device, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: t, AgentVersion: d.Version})
+	device, err := d.API.Heartbeat(ctx, d.Config.DeviceID, api.HeartbeatInput{Tools: t, AgentVersion: d.Version, MaxParallelRuns: d.Config.ParallelRuns()})
 	if err != nil {
 		d.Log.Warn("heartbeat failed", "error", err)
 		return
@@ -384,12 +399,24 @@ func (d *Daemon) startRun(ctx context.Context, msg protocol.ServerMessage, resum
 		d.runsMu.Unlock()
 		return
 	}
+	if limit := d.Config.ParallelRuns(); !resumed && len(d.runs) >= limit {
+		// The server sends no more than max_parallel_runs; this is the device's own guard.
+		n := len(d.runs)
+		d.runsMu.Unlock()
+		d.Log.Warn("run refused: device at capacity", "run_id", start.RunID, "active", n, "max_parallel_runs", limit)
+		go d.refuse(ctx, start.RunID, fmt.Sprintf("device at capacity: %d run(s) in progress, max_parallel_runs is %d", n, limit))
+		return
+	}
 	run := runner.New(start, d, d.Config, d.Log)
 	run.ToolPath = d.ToolPath
 	run.Notes = notes
 	run.BeforePrepare = d.beforePrepare
+	run.Coord = d.coord
 	d.toolsMu.Lock()
 	run.ToolVersion = d.tools[start.Tool].Version
+	if gh := d.tools[tools.GH]; gh.Available {
+		run.GH = gh.Path
+	}
 	d.toolsMu.Unlock()
 	run.Supports = d.supports
 	d.runs[start.RunID] = run
@@ -403,6 +430,55 @@ func (d *Daemon) startRun(ctx context.Context, msg protocol.ServerMessage, resum
 		final := run.Execute(ctx)
 		d.Log.Info("run ended", "run_id", start.RunID, "status", final.Status, "outcome", final.Outcome, "reason_code", final.ReasonCode, "reason", final.Reason)
 		d.finished <- start.RunID
+	}()
+}
+
+// refuse acknowledges a run.start and fails it at once (internal, with the reason): the run never touches a checkout.
+func (d *Daemon) refuse(ctx context.Context, runID, reason string) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := d.Status(ctx, runID, protocol.StatusReport{Status: protocol.StatusStarting}); err != nil {
+		d.Log.Debug("refused run not acknowledged", "run_id", runID, "error", err)
+	}
+	if err := d.Status(ctx, runID, protocol.StatusReport{Status: protocol.StatusFailed, ReasonCode: "internal", Reason: reason}); err != nil {
+		d.Log.Warn("refused run not reported", "run_id", runID, "error", err)
+	}
+}
+
+// maybePrune removes, once a day and only while no run is active, the worktrees whose branch is merged into
+// origin/<default> or that nobody used for 14 days (worktree.Prune: never one with uncommitted changes).
+func (d *Daemon) maybePrune(ctx context.Context) {
+	if d.activeCount() > 0 || time.Since(d.lastPrune) < pruneEvery || !d.pruning.CompareAndSwap(false, true) {
+		return
+	}
+	d.lastPrune = time.Now()
+	root, err := worktree.Root()
+	if err != nil {
+		d.pruning.Store(false)
+		return
+	}
+	d.toolsMu.Lock()
+	gh := ""
+	if info := d.tools[tools.GH]; info.Available {
+		gh = info.Path
+	}
+	d.toolsMu.Unlock()
+	go func() {
+		defer d.pruning.Store(false)
+		outcomes, err := worktree.Prune(ctx, worktree.Options{Root: root, GH: gh, Fetch: true, Lock: d.coord.LockRepo,
+			Skip: func(e worktree.Entry) bool { return d.coord.Claimed(e.Path) || d.run(e.LastRunID) != nil }})
+		if err != nil {
+			d.Log.Warn("worktree prune failed", "error", err)
+			return
+		}
+		for _, o := range outcomes {
+			switch {
+			case o.Err != nil:
+				d.Log.Warn("worktree not removed", "path", o.Path, "branch", o.Branch, "error", o.Err)
+			case o.Removed:
+				d.Log.Info("worktree removed", "path", o.Path, "branch", o.Branch, "why", o.Reason)
+			}
+		}
 	}()
 }
 
@@ -628,9 +704,14 @@ func (d *Daemon) publish() {
 		ids = append(ids, id)
 	}
 	d.runsMu.Unlock()
+	var dirs []string
+	if d.coord != nil {
+		dirs = d.coord.ClaimedDirs()
+	}
 	d.stateMu.Lock()
 	s := d.state
 	s.ActiveRuns = ids
+	s.Worktrees = dirs
 	if d.agent != nil {
 		a := *d.agent
 		s.Agent = &a

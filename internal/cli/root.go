@@ -35,7 +35,7 @@ definition is executed here, streamed to ProductOS, committed to a branch and op
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "log to stderr as well as the log file")
-	root.AddCommand(loginCmd(), logoutCmd(), statusCmd(), linkCmd(), unlinkCmd(), runCmd(), serviceCmd(), updateCmd(), versionCmd(), doctorCmd())
+	root.AddCommand(loginCmd(), logoutCmd(), statusCmd(), linkCmd(), unlinkCmd(), runCmd(), serviceCmd(), updateCmd(), versionCmd(), doctorCmd(), worktreesCmd())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
