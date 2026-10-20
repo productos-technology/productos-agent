@@ -70,3 +70,25 @@ func TestSplitRename(t *testing.T) {
 		t.Error("plain path is not a rename")
 	}
 }
+
+func TestParseWorktrees(t *testing.T) {
+	out := "worktree /Users/pat/mobile\nHEAD 4f2a1c3de2bd69f9e163bbfe93c8333ba76a2752\nbranch refs/heads/main\n\n" +
+		"worktree /state/worktrees/repo-1/productos-mob-c4-x\nHEAD 1111111de2bd69f9e163bbfe93c8333ba76a2752\nbranch refs/heads/productos/mob-c4-x\nlocked\n\n" +
+		"worktree /tmp/gone\nHEAD 2222222de2bd69f9e163bbfe93c8333ba76a2752\ndetached\nprunable gitdir file points to non-existent location\n"
+	list := parseWorktrees(out)
+	if len(list) != 3 {
+		t.Fatalf("list = %+v", list)
+	}
+	if list[0].Path != "/Users/pat/mobile" || list[0].Branch != "main" || list[0].Head[:7] != "4f2a1c3" {
+		t.Errorf("main = %+v", list[0])
+	}
+	if list[1].Branch != "productos/mob-c4-x" || !list[1].Locked {
+		t.Errorf("worktree = %+v", list[1])
+	}
+	if !list[2].Detached || !list[2].Prunable || list[2].Branch != "" {
+		t.Errorf("gone = %+v", list[2])
+	}
+	if Behind.String() != "behind" || Diverged.String() != "diverged" {
+		t.Error("relation names")
+	}
+}

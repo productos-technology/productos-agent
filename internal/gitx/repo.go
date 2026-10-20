@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Repo is a git checkout on disk.
@@ -108,8 +109,18 @@ func (r *Repo) IsClean(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(out) == "", nil
 }
 
+// Fetch fetches one branch of origin. A fetch that lost a race for a ref lock (another fetch of the same repository,
+// from the CLI or the person) is tried once more.
 func (r *Repo) Fetch(ctx context.Context, branch string) error {
 	_, err := r.git(ctx, "fetch", "--quiet", "origin", branch)
+	if err != nil && strings.Contains(err.Error(), "lock") {
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Second):
+		}
+		_, err = r.git(ctx, "fetch", "--quiet", "origin", branch)
+	}
 	return err
 }
 
