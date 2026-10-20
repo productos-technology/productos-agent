@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -99,8 +100,11 @@ func ago(t time.Time) string {
 		return "never"
 	}
 	d := time.Since(t).Round(time.Second)
-	if d < time.Minute {
+	switch {
+	case d < time.Minute:
 		return d.String() + " ago"
+	case d >= 48*time.Hour:
+		return strconv.Itoa(int(d/(24*time.Hour))) + " days ago"
 	}
 	return d.Round(time.Minute).String() + " ago"
 }

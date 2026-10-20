@@ -128,13 +128,26 @@ func (r *Run) prepareCheckout(ctx context.Context, name string) (string, error) 
 			return code, err
 		}
 	} else {
-		if code, err := r.refuseTakenName(ctx, name); err != nil {
+		code, err := r.refuseTakenName(ctx, name)
+		switch {
+		case err != nil && !r.emptyLeftover(ctx, name):
 			return code, err
+		case err != nil:
+			if current, _ := main.CurrentBranch(ctx); current != name {
+				if _, err := main.Git(ctx, "checkout", "--quiet", name); err != nil {
+					return codeBranchFailed, err
+				}
+			}
+			r.repo, r.branch = main, name
+			if code, err := r.reuseLeftover(ctx); err != nil {
+				return code, err
+			}
+		default:
+			if err := main.CreateBranch(ctx, name, r.from); err != nil {
+				return codeBranchFailed, err
+			}
+			r.repo, r.branch = main, name
 		}
-		if err := main.CreateBranch(ctx, name, r.from); err != nil {
-			return codeBranchFailed, err
-		}
-		r.repo, r.branch = main, name
 	}
 	if r.base, err = r.repo.Head(ctx); err != nil {
 		return codeInternal, err
@@ -234,6 +247,32 @@ func (r *Run) refuseTakenName(ctx context.Context, name string) (string, error) 
 	if onOrigin {
 		return codeBranchFailed, fmt.Errorf("the branch `%s` already exists on origin; nothing ran (continue it with Adjust, or delete it)", name)
 	}
+	return "", nil
+}
+
+// emptyLeftover: the taken name is a branch an earlier run of this change created and left without a commit of its
+// own (it failed before committing anything, so the server starts afresh): only on this machine, its tip already in
+// origin/<default>. Reusing it loses nothing, refusing it would be a dead end.
+func (r *Run) emptyLeftover(ctx context.Context, name string) bool {
+	if !r.main.BranchExists(ctx, name) {
+		return false
+	}
+	if onOrigin, err := r.main.RemoteHasBranch(ctx, name); err != nil || onOrigin {
+		return false
+	}
+	empty, err := r.main.IsAncestor(ctx, "refs/heads/"+name, "refs/remotes/origin/"+r.from)
+	return err == nil && empty
+}
+
+// reuseLeftover brings an empty leftover branch (checked out where the run works) to origin/<default>.
+func (r *Run) reuseLeftover(ctx context.Context) (string, error) {
+	if clean, err := r.repo.IsClean(ctx); err != nil || !clean {
+		return codeBranchFailed, fmt.Errorf("the branch `%s` holds uncommitted work of an earlier run in %s; commit or remove it and run again", r.branch, r.repo.Dir)
+	}
+	if err := r.repo.FastForward(ctx, "refs/remotes/origin/"+r.from); err != nil {
+		return codeBranchFailed, fmt.Errorf("could not bring `%s` to origin/%s: %w", r.branch, r.from, err)
+	}
+	r.info(fmt.Sprintf("Reusing `%s`: an earlier run left it without a commit.", r.branch))
 	return "", nil
 }
 
@@ -352,20 +391,34 @@ func (r *Run) addWorktree(ctx context.Context, name, path string) (created bool,
 			return false, code, err
 		}
 	} else {
-		if code, err := r.refuseTakenName(ctx, name); err != nil {
+		code, err := r.refuseTakenName(ctx, name)
+		leftover := err != nil && r.emptyLeftover(ctx, name)
+		if err != nil && !leftover {
 			return false, code, err
 		}
-		if code, err := r.clearPath(ctx, path); err != nil {
-			return false, code, err
+		if !ours {
+			if code, err := r.clearPath(ctx, path); err != nil {
+				return false, code, err
+			}
+			if leftover {
+				err = main.WorktreeAdd(ctx, path, name)
+			} else {
+				err = main.WorktreeAddNew(ctx, path, name, "origin/"+r.from)
+			}
+			if err != nil {
+				return false, codeWorktreeFailed, err
+			}
+			created = true
 		}
-		if err := main.WorktreeAddNew(ctx, path, name, "origin/"+r.from); err != nil {
-			return false, codeWorktreeFailed, err
-		}
-		created = true
 		if r.repo, err = gitx.Open(path); err != nil {
 			return false, codeWorktreeFailed, err
 		}
 		r.branch, r.worktree = name, r.repo.Dir
+		if leftover {
+			if code, err := r.reuseLeftover(ctx); err != nil {
+				return false, code, err
+			}
+		}
 	}
 	return created, "", nil
 }

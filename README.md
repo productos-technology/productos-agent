@@ -74,7 +74,8 @@ anything you had.
    `"worktrees": false` in `config.json`) the run happens in the linked checkout, which must be clean, as before.
 3. Which branch. A fresh run fetches `origin/<default_branch>` and creates the branch ProductOS named
    (`productos/mob-c4-keep-offline-drafts`) from it. A name that already exists, here or on origin, is refused
-   (`branch_failed`): the agent never invents `-2`, `-3`. A branch checked out in your own checkout cannot go in a
+   (`branch_failed`): the agent never invents `-2`, `-3`. The one exception is a branch an earlier run left here
+   without a commit of its own (it failed before committing): nothing can be lost, so it is reused. A branch checked out in your own checkout cannot go in a
    worktree (`branch_checked_out`: switch your checkout away and run again). Status `running`.
 4. The tool runs unattended with the change definition as its prompt. The prompt asks it to check first whether the
    change is already in place (the commits on `origin/<default_branch>` that carry the trailer are listed), never to

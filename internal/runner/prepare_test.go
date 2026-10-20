@@ -85,9 +85,11 @@ func (f repoFixture) pushElsewhere(t *testing.T, branch, file, content string) s
 	t.Helper()
 	other := filepath.Join(t.TempDir(), "other")
 	gitT(t, f.root, "clone", "-q", f.origin, other)
-	if strings.Contains(gitT(t, other, "ls-remote", "--heads", "origin", branch), branch) {
+	switch {
+	case gitT(t, other, "rev-parse", "--abbrev-ref", "HEAD") == branch:
+	case strings.Contains(gitT(t, other, "ls-remote", "--heads", "origin", branch), branch):
 		gitT(t, other, "checkout", "-q", "-b", branch, "origin/"+branch)
-	} else {
+	default:
 		gitT(t, other, "checkout", "-q", "-b", branch)
 	}
 	_ = os.WriteFile(filepath.Join(other, file), []byte(content), 0o644)
@@ -196,7 +198,12 @@ func TestPrepareFreshRunRefusesATakenNameNeverSuffixes(t *testing.T) {
 			if code != codeBranchFailed || err == nil || !strings.Contains(err.Error(), "already exists on origin") {
 				t.Errorf("remote: %s %v", code, err)
 			}
-			gitT(t, f.work, "branch", "local-only", "main")
+			// A local branch with work of its own (an empty one is an earlier run's leftover, reused below).
+			gitT(t, f.work, "checkout", "-q", "-b", "local-only")
+			_ = os.WriteFile(filepath.Join(f.work, "local.txt"), []byte("mine\n"), 0o644)
+			gitT(t, f.work, "add", "-A")
+			gitT(t, f.work, "commit", "-q", "-m", "local work")
+			gitT(t, f.work, "checkout", "-q", "main")
 			_, code, err, _ = prepareRun(t, f.start("run-3", "local-only", wt, nil), nil)
 			if code != codeBranchFailed || err == nil || !strings.Contains(err.Error(), "already exists on this machine") {
 				t.Errorf("local: %s %v", code, err)
@@ -358,5 +365,33 @@ func TestTwoRunsNeverShareADirectory(t *testing.T) {
 	b.release = nil
 	if code, err := b.prepare(context.Background()); err != nil {
 		t.Errorf("once released: %s %v", code, err)
+	}
+}
+
+// A fresh run that failed before committing anything left its branch at origin/main, here only: the next fresh run
+// reuses it (nothing to lose) instead of refusing a dead end.
+func TestPrepareFreshRunReusesAnEmptyLeftoverBranch(t *testing.T) {
+	for _, wt := range []bool{true, false} {
+		t.Run(map[bool]string{true: "worktree", false: "checkout"}[wt], func(t *testing.T) {
+			f := newRepoFixture(t)
+			first, code, err, _ := prepareRun(t, f.start("run-l1", branch, wt, nil), nil)
+			if err != nil {
+				t.Fatalf("%s %v", code, err)
+			}
+			if !wt {
+				gitT(t, f.work, "checkout", "-q", "main")
+			}
+			f.pushElsewhere(t, "main", "later.txt", "main moved on\n")
+			second, code, err, logs := prepareRun(t, f.start("run-l2", branch, wt, nil), nil)
+			if err != nil {
+				t.Fatalf("%s %v\n%s", code, err, logs)
+			}
+			if second.base != gitT(t, f.work, "rev-parse", "origin/main") || second.repo.Dir != first.repo.Dir {
+				t.Errorf("base %s, dir %s", second.base, second.repo.Dir)
+			}
+			if !strings.Contains(logs, "Reusing `"+branch+"`: an earlier run left it without a commit.") {
+				t.Errorf("logs = %s", logs)
+			}
+		})
 	}
 }
