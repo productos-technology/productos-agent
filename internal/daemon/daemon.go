@@ -413,6 +413,7 @@ func (d *Daemon) startRun(ctx context.Context, msg protocol.ServerMessage, resum
 	run.Notes = notes
 	run.BeforePrepare = d.beforePrepare
 	run.Coord = d.coord
+	run.Fetch = d.API.Attachment
 	d.toolsMu.Lock()
 	run.ToolVersion = d.tools[start.Tool].Version
 	if gh := d.tools[tools.GH]; gh.Available {

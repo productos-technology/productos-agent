@@ -66,6 +66,19 @@ func fakeTool() {
 		fmt.Fprintln(os.Stderr, "fake tool: resumed prompt lacks "+expect)
 		os.Exit(2)
 	}
+	if snapshot := os.Getenv("PRODUCTOS_AGENT_FAKE_SNAPSHOT"); snapshot != "" {
+		// What the tool finds of the attached files where it works, and whether git sees them.
+		if f, err := os.OpenFile(snapshot, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			entries, _ := os.ReadDir(filepath.Join(".productos", "attachments"))
+			for _, e := range entries {
+				content, _ := os.ReadFile(filepath.Join(".productos", "attachments", e.Name()))
+				fmt.Fprintf(f, "%s=%q\n", e.Name(), content)
+			}
+			status, _ := exec.Command("git", "status", "--porcelain", "--untracked-files=all").Output()
+			fmt.Fprintf(f, "git status=%q\n", status)
+			f.Close()
+		}
+	}
 	fixture := os.Getenv("PRODUCTOS_AGENT_FAKE_FIXTURE")
 	edits := os.Getenv("PRODUCTOS_AGENT_FAKE_EDITS")
 	if resumed {
@@ -129,6 +142,8 @@ type fakeServer struct {
 	// seed is announced with seed.plant after hello; the agent's reports land in seedReports.
 	seed        *protocol.Seed
 	seedReports chan protocol.SeedStatusReport
+	// files are the attached files a run downloads, by path (GET /runs/{id}/attachments/{id}).
+	files map[string][]byte
 }
 
 type fakeRun struct {
@@ -280,6 +295,16 @@ func (f *fakeServer) runRoutes(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.applyStatus(run, in)
 		writeJSON(w, 200, map[string]any{"id": parts[0], "status": run.status})
+	case len(parts) == 3 && parts[1] == "attachments" && r.Method == http.MethodGet:
+		body, ok := f.files[r.URL.Path]
+		if !ok {
+			writeErr(w, 404, "not_found", "no such file on this run")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(body)
 	default:
 		writeJSON(w, 200, map[string]any{"run": map[string]any{"id": parts[0], "status": run.status}, "events": []any{}})
 	}

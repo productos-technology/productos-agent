@@ -57,6 +57,8 @@ const (
 	codeServerClosed     = "server_closed"
 	codeAgentRestarted   = "agent_restarted"
 	codeInternal         = "internal"
+	// codeAttachmentFailed: a file attached to the change could not be fetched or verified; the tool never started.
+	codeAttachmentFailed = "attachment_failed"
 )
 
 // AgentRestarted is the code the daemon sends for a run that was active when the process restarted.
@@ -81,6 +83,8 @@ const (
 	NoteUpdateAvailable   = "update_available"
 	NoteUpdated           = "updated"
 	NoteUpdateFailed      = "update_failed"
+	// noteAttachmentsRead: how many files attached to the change the tool was given ("2 attached files").
+	noteAttachmentsRead = "attachments_read"
 )
 
 // toolAnswer is the tool's answer to the report schema.

@@ -1,9 +1,9 @@
 // Package runner executes one `run.start`: prepares where the run works (the change's own worktree, or the linked
-// checkout; a new branch, or for an adjust run the branch it continues), drives the tool in its JSON streaming mode
-// (resuming the previous session when this machine has it), turns its stream into protocol events, relays questions
-// and answers, and finishes with an outcome git decides (a commit, a push, a pull request opened or updated; or
-// nothing to change), a structured report and the final status. Work the tool did is never lost: a run that fails or
-// is cancelled commits it on its branch.
+// checkout; a new branch, or for an adjust run the branch it continues), downloads the files attached to the change
+// (attachments.go), drives the tool in its JSON streaming mode (resuming the previous session when this machine has
+// it), turns its stream into protocol events, relays questions and answers, and finishes with an outcome git decides
+// (a commit, a push, a pull request opened or updated; or nothing to change), a structured report and the final
+// status. Work the tool did is never lost: a run that fails or is cancelled commits it on its branch.
 package runner
 
 import (
@@ -76,6 +76,8 @@ type Run struct {
 	// Coord serialises the git work of the device's runs per repository and keeps two runs out of one directory (the
 	// daemon's; a private one when nil).
 	Coord *worktree.Coordinator
+	// Fetch downloads the files attached to the change with the device token (the daemon's API client).
+	Fetch Fetcher
 
 	ghExec ghExec // tests
 
@@ -105,6 +107,9 @@ type Run struct {
 	prose       string
 	answer      *toolAnswer
 	notes       []protocol.Note
+	// attached are the files downloaded for the tool; attachDir their folder until the run removes it.
+	attached  []attachedFile
+	attachDir string
 }
 
 type testStats struct {
@@ -176,6 +181,8 @@ func (r *Run) Execute(parent context.Context) protocol.StatusReport {
 
 	r.emitter = newEmitter(r.Start.RunID, r.Reporter, r.Log)
 	final := r.execute(ctx)
+	// The attached files go before anything is committed (finish already removed them on its way to the commit).
+	r.removeAttachments()
 	if r.isCancelled() {
 		r.mu.Lock()
 		reason := r.reason
@@ -190,6 +197,9 @@ func (r *Run) Execute(parent context.Context) protocol.StatusReport {
 	defer wrapCancel()
 	if final.Status != protocol.StatusSucceeded {
 		r.preserve(wrap, &final)
+	}
+	if note, ok := r.attachmentsNote(); ok {
+		r.addNote(note)
 	}
 	if r.tests.lastFailed != "" {
 		r.addNote(protocol.Note{Code: noteTestsFailing, Text: "the last test run failed: " + oneLine(r.tests.lastFailed, 200)})
@@ -245,6 +255,12 @@ func (r *Run) execute(ctx context.Context) protocol.StatusReport {
 		return r.fail(serverCode(err), "could not report the run as running: "+err.Error())
 	}
 	r.info(r.preparedLine())
+	if code, err := r.fetchAttachments(ctx); err != nil {
+		if stop, ok := r.interrupted(ctx); ok {
+			return stop
+		}
+		return r.fail(code, err.Error())
+	}
 	r.lookupPriorCommits(ctx)
 
 	inv := Invocation{Bin: bin, Dir: r.repo.Dir, Config: r.Config}
@@ -257,7 +273,7 @@ func (r *Run) execute(ctx context.Context) protocol.StatusReport {
 		inv.SchemaFile = path
 	}
 
-	facts := promptFacts{Dir: r.repo.Dir, Branch: r.branch, AsksWithTool: driver.AsksWithTool(), Prior: r.prior, Worktree: r.worktree != ""}
+	facts := promptFacts{Dir: r.repo.Dir, Branch: r.branch, AsksWithTool: driver.AsksWithTool(), Prior: r.prior, Worktree: r.worktree != "", Attached: r.attached}
 	if c := r.Start.Continue; c != nil {
 		ci, reviews := r.readGitHub(ctx)
 		facts.Adjust, facts.Brief = c, renderBrief(c, ci, reviews, "")
@@ -265,8 +281,9 @@ func (r *Run) execute(ctx context.Context) protocol.StatusReport {
 	input := buildPrompt(r.Start, facts)
 	resuming := false
 	if id := r.resumable(); id != "" {
-		// The previous run's session on this machine: it knows the change already, so it gets the brief only.
-		r.sessionID, resuming, input = id, true, facts.Brief
+		// The previous run's session on this machine: it knows the change already, so it gets the brief only (and
+		// this round's attached files: the previous round's were removed when it ended).
+		r.sessionID, resuming, input = id, true, resumePrompt(facts)
 		r.info("Resuming the session of the previous run.")
 	}
 	for round := 0; ; round++ {
@@ -607,6 +624,7 @@ func (r *Run) ask(ctx context.Context, q *stream.Item) (Answer, error) {
 // finish commits what the tool left and lets git decide the outcome (reconcile); on `changed` it pushes and opens
 // the pull request.
 func (r *Run) finish(ctx context.Context) protocol.StatusReport {
+	r.removeAttachments() // never in a commit
 	message := r.commitMessage("")
 	committed, err := r.repo.CommitAll(ctx, message)
 	if err != nil {
