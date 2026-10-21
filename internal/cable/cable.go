@@ -106,7 +106,7 @@ func Dial(ctx context.Context, opts Options) (*Conn, error) {
 	c := &Conn{ws: ws, identifier: string(ident), messages: make(chan json.RawMessage, 256), done: make(chan struct{})}
 
 	// welcome
-	if err := c.expect(dialCtx, "welcome"); err != nil {
+	if _, err := c.expect(dialCtx, "welcome"); err != nil {
 		c.closeWith(err)
 		return nil, err
 	}
@@ -114,42 +114,69 @@ func Dial(ctx context.Context, opts Options) (*Conn, error) {
 		c.closeWith(err)
 		return nil, err
 	}
-	if err := c.expect(dialCtx, "confirm_subscription"); err != nil {
+	early, err := c.expect(dialCtx, "confirm_subscription")
+	if err != nil {
 		c.closeWith(err)
 		return nil, err
+	}
+	// What the channel transmitted inside `subscribed` (the server's hello) arrives BEFORE the confirmation frame:
+	// Action Cable sends the confirmation once `subscribed` returns. Those frames are delivered first.
+	for _, msg := range early {
+		c.deliver(msg)
 	}
 	go c.readLoop()
 	return c, nil
 }
 
-// expect reads frames until the given type arrives (pings are skipped; reject_subscription is ErrRejected).
-func (c *Conn) expect(ctx context.Context, want string) error {
+// expect reads frames until the given type arrives (pings are skipped; reject_subscription is ErrRejected). The
+// channel's own messages read meanwhile are returned, in order, so nothing transmitted during `subscribed` is lost.
+func (c *Conn) expect(ctx context.Context, want string) ([]json.RawMessage, error) {
+	var early []json.RawMessage
 	for {
 		_, data, err := c.ws.Read(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var frame struct {
-			Type string `json:"type"`
+			Type       string          `json:"type"`
+			Identifier string          `json:"identifier"`
+			Message    json.RawMessage `json:"message"`
 		}
 		if json.Unmarshal(data, &frame) != nil {
 			continue
 		}
 		switch frame.Type {
 		case want:
-			return nil
+			return early, nil
+		case "":
+			if frame.Identifier == c.identifier && len(frame.Message) > 0 {
+				early = append(early, frame.Message)
+			}
 		case "ping":
 			continue
 		case "reject_subscription":
-			return ErrRejected
+			return nil, ErrRejected
 		case "disconnect":
 			var d struct {
 				Reason    string `json:"reason"`
 				Reconnect bool   `json:"reconnect"`
 			}
 			_ = json.Unmarshal(data, &d)
-			return fmt.Errorf("server disconnected: %s", d.Reason)
+			return nil, fmt.Errorf("server disconnected: %s", d.Reason)
 		}
+	}
+}
+
+// deliver hands one channel message to the daemon; a full buffer means the daemon stalled, so the oldest is dropped.
+func (c *Conn) deliver(msg json.RawMessage) {
+	select {
+	case c.messages <- msg:
+	default:
+		select {
+		case <-c.messages:
+		default:
+		}
+		c.messages <- msg
 	}
 }
 
@@ -180,16 +207,7 @@ func (c *Conn) readLoop() {
 			return
 		case "":
 			if frame.Identifier == c.identifier && len(frame.Message) > 0 {
-				select {
-				case c.messages <- frame.Message:
-				default:
-					// A full buffer means the daemon stalled; drop the oldest.
-					select {
-					case <-c.messages:
-					default:
-					}
-					c.messages <- frame.Message
-				}
+				c.deliver(frame.Message)
 			}
 		}
 	}

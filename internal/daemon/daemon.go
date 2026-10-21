@@ -339,6 +339,7 @@ func (d *Daemon) dispatch(ctx context.Context, raw json.RawMessage) {
 		d.features = msg.Features
 		d.stateMu.Unlock()
 		d.setAgent(msg.Agent)
+		d.publish()
 		d.maybeUpdateIdle(ctx)
 	case "run.start":
 		d.setAgent(msg.Agent)
@@ -716,6 +717,7 @@ func (d *Daemon) publish() {
 		a := *d.agent
 		s.Agent = &a
 	}
+	s.Features = append([]string(nil), d.features...)
 	d.stateMu.Unlock()
 	writeState(s)
 }

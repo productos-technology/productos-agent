@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -53,6 +54,9 @@ func statusCmd() *cobra.Command {
 					conn = "connected"
 				}
 				out(w, "Daemon:   running (pid %d, %s, last heartbeat %s, %d active run(s))", state.PID, conn, ago(state.LastHeartbeat), len(state.ActiveRuns))
+				if len(state.Features) > 0 {
+					out(w, "          server features: %s", strings.Join(state.Features, ", "))
+				}
 				if state.Error != "" {
 					out(w, "          last error: %s", state.Error)
 				}

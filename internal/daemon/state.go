@@ -27,6 +27,8 @@ type State struct {
 	Version       string                  `json:"version,omitempty"`
 	InstallMethod string                  `json:"install_method,omitempty"`
 	Agent         *protocol.AgentVersions `json:"agent,omitempty"`
+	// Features is what the server's hello announced on this connection (empty until it is heard).
+	Features []string `json:"features,omitempty"`
 }
 
 func stateFile() (string, error) {
