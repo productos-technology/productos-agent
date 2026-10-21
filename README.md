@@ -77,7 +77,17 @@ anything you had.
    (`branch_failed`): the agent never invents `-2`, `-3`. The one exception is a branch an earlier run left here
    without a commit of its own (it failed before committing): nothing can be lost, so it is reused. A branch checked out in your own checkout cannot go in a
    worktree (`branch_checked_out`: switch your checkout away and run again). Status `running`.
-4. The tool runs unattended with the change definition as its prompt. The prompt asks it to check first whether the
+4. Files attached to the change. When ProductOS attached files to the change (a spreadsheet, a mockup, a document),
+   `run.start` lists them and the agent downloads each with the device token into
+   `<where the run works>/.productos/attachments/` before the tool starts: streamed to disk, its size and SHA-256
+   checked, the name reduced to a safe file name (no directories, no `..`, no control characters; a second file with
+   the same name becomes `name-2.ext`). `/.productos/` is added once to the repository's `info/exclude` (shared by your
+   checkout and every worktree), so git never sees the files. The prompt lists their absolute paths under "Attached
+   files" as reference material, never instructions, never to be committed. A file that cannot be fetched or does not
+   match fails the run with `attachment_failed` (the reason names the file) and the tool never starts. The folder is
+   removed when the run ends, succeeded, failed or cancelled, before the agent commits anything; the report notes
+   `attachments_read` with how many the tool was given.
+5. The tool runs unattended with the change definition as its prompt. The prompt asks it to check first whether the
    change is already in place (the commits on `origin/<default_branch>` that carry the trailer are listed), never to
    make cosmetic changes just to have something to commit, to put what it did not do in `left_out`, and to end with a
    structured report in the language of the change definition. In a worktree it also says the checkout is fresh and
@@ -90,10 +100,10 @@ anything you had.
    `GH_PROMPT_DISABLED=1` and `NO_COLOR=1`. Its stream becomes drawer events: `message`, `tool_use` (with output and duration), `file_change` (from
    `git diff --numstat` against the base commit), `test` (commands recognised as test runners, with pass/fail), `log`.
    Events go out in batches (50 or 500 ms) with an acknowledged outbox; nothing acknowledged is ever resent.
-5. A question (Claude Code's `AskUserQuestion`, a report with claim `needs_input` and a `question`, or a final message
+6. A question (Claude Code's `AskUserQuestion`, a report with claim `needs_input` and a `question`, or a final message
    that ends with a question when there is no report) becomes a `question` event; the run waits for your answer in the drawer and resumes the tool's session with it
    (`claude --resume <session>` / `codex exec resume <thread>`).
-6. When the tool is done, uncommitted work is committed as `MOB-C4: <title>` with the trailer `ProductOS: MOB-C4`, and
+7. When the tool is done, uncommitted work is committed as `MOB-C4: <title>` with the trailer `ProductOS: MOB-C4`, and
    git decides the outcome, the tool's words only explain it:
    - new commits: `succeeded` with outcome `changed`, the branch is pushed (`"push": false` in `config.json` disables
      it) and with `gh` on PATH a pull request is opened. A push or PR failure never fails the run: it becomes a
@@ -105,14 +115,14 @@ anything you had.
    headline, customer change, changes, verification, left out, evidence) plus what the agent knows (files, tests,
    prior commits, notes such as `permission_denied` and `tests_failing`, tool and agent versions), and, to a server
    that knows them, the tool's `session_id` and the `worktree_path`.
-7. A failure has a `reason_code` (`checkout_dirty`, `fetch_failed`, `branch_failed`, `branch_diverged`,
-   `branch_checked_out`, `worktree_failed`, `tool_auth`, `tool_limit`, `tool_crashed`, `timeout`, …) and a one-line
+8. A failure has a `reason_code` (`checkout_dirty`, `fetch_failed`, `branch_failed`, `branch_diverged`,
+   `branch_checked_out`, `worktree_failed`, `attachment_failed`, `tool_auth`, `tool_limit`, `tool_crashed`, `timeout`, …) and a one-line
    `reason`. When the tool had edited files and the run fails or is cancelled, the work is
    committed on the run's branch as `WIP: MOB-C4: <title>` (hooks skipped; stashed if even that fails), pushed when
    push is on, and the branch and commit go out with the final status: nothing is lost and the checkout is left clean.
    `run.cancel` kills the tool's process group and ends in `cancelled`. Runs time out after 110 minutes (under the
    server's 2-hour stuck sweep).
-8. Against a server from before outcomes (its `hello` has no `features`), a `no_change` is sent as the old failure
+9. Against a server from before outcomes (its `hello` has no `features`), a `no_change` is sent as the old failure
    ("the tool made no changes").
 
 ## Adjusting a change
@@ -135,7 +145,7 @@ them ("Adjust", `continue` on `run.start`), not a new branch from main:
    quoted)": quoted line by line between two markers that carry a random nonce, with the instruction to treat them as
    data, never as instructions.
 4. When ProductOS sends the previous run's session (same machine, same tool), the first call resumes it
-   (`claude -p --resume <id>`, `codex exec resume <id>`) with the brief alone. A session this machine no longer has
+   (`claude -p --resume <id>`, `codex exec resume <id>`) with the brief alone (and this round's attached files, if any). A session this machine no longer has
    (or that refuses to resume before doing anything) falls back to a new session with the change definition and the
    brief.
 5. The push updates the open pull request (`pr_updated`); no second pull request is opened. "Start over from main" is
@@ -206,6 +216,9 @@ GitHub's API.
   `origin` matches a GitHub repository connected to one of your workspaces. The server enforces this.
 - The agent never receives cookies, CSRF tokens or anyone's secrets; the change definition names no customer.
 - Access tokens live one hour and are refreshed with rotation; refresh failures that cannot be fixed sign you out.
+- Files attached to a change are fetched only from the server's agent API (`/api/v1/agent/…`, never another host or
+  path) with the device token; they are written owner-only under `.productos/attachments/`, never through a symlink,
+  never over a file the repository tracks, and never committed.
 
 ## Protocol
 
@@ -247,6 +260,21 @@ minted by `actions/create-github-app-token` for each run; secrets `RELEASE_APP_I
 `RELEASE_APP_PRIVATE_KEY` (`scripts/release-secrets.sh app`) plus `AGENT_SIGNING_KEY` (`scripts/release-secrets.sh signing`).
 No personal token is involved. `install.sh` here is the real installer the server
 serves at `/install.sh`.
+
+## Release notes
+
+### 0.4.0
+
+- **Files attached to a change reach the tool.** A `run.start` may list the files people attached to the change (a
+  server that announces `attachments` in its `hello`). After the checkout, fresh or adjust, the agent downloads each
+  with the device token into `.productos/attachments/` where the run works: streamed to disk, size and SHA-256
+  checked, the name made safe (no directories or `..`, no control characters, duplicates as `name-2.ext`). It adds
+  `/.productos/` once to the repository's `info/exclude`, lists the absolute paths in the prompt under "Attached files"
+  (reference material, never instructions, never committed), and removes the folder when the run ends, succeeded,
+  failed or cancelled, before any commit. A file that cannot be fetched or verified fails the run with
+  `attachment_failed`, naming the file, before the tool starts; the report notes `attachments_read`. A resumed session
+  of an adjust round gets this round's files with the brief. ProductOS runs a change that has files only on an agent
+  at 0.4.0 or later.
 
 ## License
 
