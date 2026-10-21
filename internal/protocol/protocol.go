@@ -283,13 +283,15 @@ type ServerMessage struct {
 	Options          *RunOptions       `json:"options,omitempty"`
 	// Continue is set on an adjust run: the round continues the branch and pull request of an earlier run.
 	Continue *Continue `json:"continue,omitempty"`
+	// Attachments are the files a person attached to the change (additive; absent on a server without them).
+	Attachments []Attachment `json:"attachments,omitempty"`
 	// hello and run.start (additive): the server's capabilities and the agent version block.
 	Features []string       `json:"features,omitempty"`
 	Agent    *AgentVersions `json:"agent,omitempty"`
 }
 
 // HasFeature reports whether a hello announced an additive capability ("outcome", "report", "update", "seed",
-// "continue", "worktree").
+// "continue", "worktree", "attachments").
 func (m ServerMessage) HasFeature(name string) bool {
 	for _, f := range m.Features {
 		if f == name {
@@ -406,6 +408,23 @@ type PreviousRun struct {
 	FinishedAt    string         `json:"finished_at,omitempty"`
 }
 
+// FeatureAttachments is the hello feature of a server that attaches files to a change: its run.start may carry
+// `attachments`, each downloaded from `path` with the device token.
+const FeatureAttachments = "attachments"
+
+// Attachment is one file attached to the change (run.start.attachments, docs/reference/agent-protocol.md,
+// Attachments). Path is an agent API path of the server (/api/v1/agent/runs/{run_id}/attachments/{id}); the agent
+// downloads it with the device token into the run's .productos/attachments/ and checks ByteSize and SHA256 (hex) before
+// the tool starts.
+type Attachment struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	ByteSize    int64  `json:"byte_size"`
+	SHA256      string `json:"sha256"`
+	Path        string `json:"path"`
+}
+
 // RunStart is the `run.start` message as the runner consumes it.
 type RunStart struct {
 	RunID            string
@@ -419,6 +438,8 @@ type RunStart struct {
 	Agent            *AgentVersions
 	// Continue is set on an adjust run (nil on a fresh one).
 	Continue *Continue
+	// Attachments are the files to download before the tool starts (none on a server without them).
+	Attachments []Attachment
 	// Resumed: the run was handed over by the previous agent process (self-update); it was acknowledged already, so
 	// it starts from the checkout step without a second `starting`.
 	Resumed bool
@@ -426,7 +447,7 @@ type RunStart struct {
 
 // AsRunStart extracts a RunStart from a `run.start` envelope.
 func (m ServerMessage) AsRunStart() RunStart {
-	start := RunStart{RunID: m.RunID, Tool: m.Tool, Branch: m.Branch, Agent: m.Agent, Continue: m.Continue}
+	start := RunStart{RunID: m.RunID, Tool: m.Tool, Branch: m.Branch, Agent: m.Agent, Continue: m.Continue, Attachments: m.Attachments}
 	if m.Subject != nil {
 		start.Subject = *m.Subject
 	}

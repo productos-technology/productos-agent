@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/productos-technology/productos-agent/internal/protocol"
@@ -56,6 +58,8 @@ type Client struct {
 	BaseURL string
 	HTTP    *http.Client
 	Tokens  TokenSource
+	// Stall is how long a download may receive nothing before it is abandoned (0: a minute).
+	Stall time.Duration
 }
 
 func New(server string, tokens TokenSource) *Client {
@@ -173,6 +177,149 @@ func (c *Client) PostSeedStatus(ctx context.Context, seedID string, report proto
 	return c.do(ctx, http.MethodPost, "/api/v1/agent/seeds/"+url.PathEscape(seedID)+"/status", report, nil)
 }
 
+// --- attached files ---
+
+// agentPrefix: the server names downloads by paths of the agent API; nothing else is fetched with the device token.
+const agentPrefix = "/api/v1/agent/"
+
+// downloadStall: a download that receives nothing for this long is abandoned (a stalled connection must not hold a
+// run until its own timeout).
+const downloadStall = 60 * time.Second
+
+// Attachment streams the body of GET path into dst with the device token: path is what run.start named for an
+// attached file (/api/v1/agent/runs/{run_id}/attachments/{id}). At most limit bytes are copied, and a longer body is
+// an error, never a cut file. A path off this server or outside the agent API is refused before anything is sent.
+// No overall timeout (the caller's context bounds it), but no data for a minute ends it; one token refresh on 401.
+func (c *Client) Attachment(ctx context.Context, path string, dst io.Writer, limit int64) (int64, error) {
+	target, err := c.agentURL(path)
+	if err != nil {
+		return 0, err
+	}
+	token, err := c.Tokens.Token(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n, status, err := c.download(ctx, target, token, dst, limit)
+	if status == http.StatusUnauthorized {
+		if rerr := c.Tokens.Invalidate(ctx, token); rerr != nil {
+			return 0, rerr
+		}
+		if token, err = c.Tokens.Token(ctx); err != nil {
+			return 0, err
+		}
+		n, _, err = c.download(ctx, target, token, dst, limit)
+	}
+	return n, err
+}
+
+// agentURL resolves a server-named path against BaseURL: a relative path under /api/v1/agent/ (or the same as an
+// absolute URL of this server), already clean (no `..`, no encoded separators that clean to something else).
+func (c *Client) agentURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	base := strings.TrimRight(c.BaseURL, "/")
+	if rest, ok := strings.CutPrefix(raw, base); ok && base != "" && strings.HasPrefix(rest, "/") {
+		raw = rest
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("refused the download path %q: %w", raw, err)
+	}
+	if u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil {
+		return "", fmt.Errorf("refused the download path %q: not on this server", raw)
+	}
+	if p := u.Path; !strings.HasPrefix(p, agentPrefix) || path.Clean(p) != p {
+		return "", fmt.Errorf("refused the download path %q: not a path of the agent API", raw)
+	}
+	target := base + u.EscapedPath()
+	if u.RawQuery != "" {
+		target += "?" + u.RawQuery
+	}
+	return target, nil
+}
+
+// download is one attempt; the status lets Attachment refresh the token on a 401.
+func (c *Client) download(ctx context.Context, target, token string, dst io.Writer, limit int64) (int64, int, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	stall := c.Stall
+	if stall <= 0 {
+		stall = downloadStall
+	}
+	stalled := fmt.Errorf("no data from the server for %s", stall)
+	timer := time.AfterFunc(stall, func() { cancel(stalled) })
+	defer timer.Stop()
+	because := func(err error) error {
+		if errors.Is(context.Cause(ctx), stalled) {
+			return stalled
+		}
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", "productos-agent/"+version.String())
+	res, err := c.downloader().Do(req)
+	if err != nil {
+		return 0, 0, because(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		data, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+		return 0, res.StatusCode, envelopeError(res.StatusCode, data)
+	}
+	if res.StatusCode != http.StatusOK {
+		return 0, res.StatusCode, fmt.Errorf("unexpected answer %d %s", res.StatusCode, http.StatusText(res.StatusCode))
+	}
+	if res.ContentLength > limit {
+		return 0, res.StatusCode, fmt.Errorf("the server sends %d bytes, %d expected", res.ContentLength, limit)
+	}
+	n, err := io.Copy(dst, &stallReader{r: io.LimitReader(res.Body, limit+1), timer: timer, every: stall})
+	if err != nil {
+		return n, res.StatusCode, because(err)
+	}
+	if n > limit {
+		return n, res.StatusCode, fmt.Errorf("the server sent more than the %d bytes expected", limit)
+	}
+	return n, res.StatusCode, nil
+}
+
+// downloader is the client without the 30 s overall timeout (a large file takes longer); it follows at most five
+// redirects and never from https to http. Go drops the Authorization header on a redirect to another host.
+func (c *Client) downloader() *http.Client {
+	var transport http.RoundTripper
+	if c.HTTP != nil {
+		transport = c.HTTP.Transport
+	}
+	return &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+			return errors.New("refused a redirect from https to http")
+		}
+		return nil
+	}}
+}
+
+// stallReader pushes the stall deadline back on every read that brings data.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+	every time.Duration
+}
+
+func (s *stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.every)
+	}
+	return n, err
+}
+
 // --- plumbing ---
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
@@ -231,17 +378,7 @@ func (c *Client) once(ctx context.Context, method, path string, body []byte, acc
 		return res.StatusCode, err
 	}
 	if res.StatusCode >= 400 {
-		apiErr := &Error{Status: res.StatusCode}
-		var envelope struct {
-			Error *Error `json:"error"`
-		}
-		if json.Unmarshal(data, &envelope) == nil && envelope.Error != nil {
-			apiErr.Code, apiErr.Message, apiErr.Details = envelope.Error.Code, envelope.Error.Message, envelope.Error.Details
-		}
-		if apiErr.Code == "" {
-			apiErr.Code = http.StatusText(res.StatusCode)
-		}
-		return res.StatusCode, apiErr
+		return res.StatusCode, envelopeError(res.StatusCode, data)
 	}
 	if raw, ok := out.(*[]byte); ok {
 		*raw = data
@@ -254,6 +391,21 @@ func (c *Client) once(ctx context.Context, method, path string, body []byte, acc
 		return res.StatusCode, fmt.Errorf("response is not the expected JSON: %w", err)
 	}
 	return res.StatusCode, nil
+}
+
+// envelopeError decodes the API's error envelope; a body that is not one keeps the HTTP status text as its code.
+func envelopeError(status int, data []byte) *Error {
+	apiErr := &Error{Status: status}
+	var envelope struct {
+		Error *Error `json:"error"`
+	}
+	if json.Unmarshal(data, &envelope) == nil && envelope.Error != nil {
+		apiErr.Code, apiErr.Message, apiErr.Details = envelope.Error.Code, envelope.Error.Message, envelope.Error.Details
+	}
+	if apiErr.Code == "" {
+		apiErr.Code = http.StatusText(status)
+	}
+	return apiErr
 }
 
 // IsCode reports whether err is an API error with the given code.
